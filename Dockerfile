@@ -25,7 +25,7 @@ RUN dart compile exe servers/signals_server.dart -o bin/signals_server_exec
 # ---------- Runtime Stage ----------
 FROM debian:stable-slim
 
-WORKDIR /app
+WORKDIR /appq
 
 # Copy compiled executable from build stage
 COPY --from=build /app/bin/signals_server_exec ./bin/signals_server_exec
