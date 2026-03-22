@@ -1,23 +1,21 @@
 # ---------- Build Stage ----------
 FROM dart:stable AS build
 
-# Set working directory inside container
 WORKDIR /app
 
-# Copy pubspec first (cache-friendly)
+# Copy pubspec first
 COPY pubspec.* ./
 
 # Install dependencies
 RUN dart pub get
 
-# Copy all source code (servers, services, models)
+# Copy source code
 COPY servers ./servers
 COPY services ./services
 COPY models ./models
 
-# Optional: copy config or environment files if you have any
-# COPY config ./config
-# COPY .env ./.env
+# 🔥 CREATE bin folder (IMPORTANT FIX)
+RUN mkdir -p bin
 
 # Compile Dart server to executable
 RUN dart compile exe servers/signals_server.dart -o bin/signals_server_exec
@@ -25,17 +23,17 @@ RUN dart compile exe servers/signals_server.dart -o bin/signals_server_exec
 # ---------- Runtime Stage ----------
 FROM debian:stable-slim
 
-WORKDIR /appq
+WORKDIR /app
 
-# Copy compiled executable from build stage
+# Copy executable
 COPY --from=build /app/bin/signals_server_exec ./bin/signals_server_exec
 
-# Ensure executable has permission
+# Permission
 RUN chmod +x ./bin/signals_server_exec
 
-# Expose the port Railway expects
+# Port
 ENV PORT=8080
 EXPOSE 8080
 
-# Run the server in foreground
+# Run
 CMD ["./bin/signals_server_exec"]
