@@ -1,4 +1,4 @@
-// signals_server.dart
+// lib/src/servers/signals_server.dart
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -14,8 +14,9 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
 void main() async {
+  // 🔹 Listen kwa all external IPs
   final server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
-  print('📡 Signals WebSocket server running on ws://localhost:8080/signals');
+  print('📡 Signals WebSocket server running on ws://0.0.0.0:8080/signals');
 
   await for (HttpRequest request in server) {
     if (request.uri.path == '/signals') {
@@ -76,7 +77,7 @@ void _handleSocket(WebSocketChannel socket) {
   _subscriptions[socket] = sub;
   _clients.putIfAbsent(pair, () => []).add(socket);
 
-  // Heartbeat
+  // Heartbeat every 15s
   _heartbeats[socket]?.cancel();
   _heartbeats[socket] = Timer.periodic(
     const Duration(seconds: 15),
@@ -98,8 +99,8 @@ String _handleClientMessage(
     WebSocketChannel socket, dynamic msg, String currentPair) {
   try {
     final data = jsonDecode(msg);
-    if (data['pair'] != null) {
-      final newPair = data['pair'].toUpperCase();
+    if (data['subscribe'] != null) {
+      final newPair = data['subscribe'].toUpperCase();
       if (newPair != currentPair) {
         print('📩 Switching pair: $currentPair → $newPair');
 
@@ -116,6 +117,7 @@ String _handleClientMessage(
     }
   } catch (_) {}
 
+  // Respond to heartbeat
   if (msg == 'ping') socket.sink.add('pong');
 
   return currentPair;
@@ -128,7 +130,7 @@ Map<String, dynamic> _buildPayload(
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
 
   return {
-    "pair": pair,
+    "symbol": pair,
     "status": "ready",
     "canBuy": analysis.canBuy ?? false,
     "canSell": analysis.canSell ?? false,
