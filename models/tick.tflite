@@ -1,0 +1,36 @@
+import 'candle.dart';
+
+class MarketPair {
+  final String symbol; // Jina la pair, mfano "frxEURUSD"
+  double? lastPrice;   // Bei ya sasa
+  List<Candle> candles; // Historical candles kwa analysis
+  double probabilityLong; // Probability ya Go Long
+  double probabilityShort; // Probability ya Go Short
+  Map<String, double> indicators; // Values za indicators, mfano RSI, EMA, SMA, MACD
+
+  MarketPair({
+    required this.symbol,
+    this.lastPrice,
+    this.candles = const [],
+    this.probabilityLong = 0.0,
+    this.probabilityShort = 0.0,
+    Map<String, double>? indicators,
+  }) : indicators = indicators ?? {};
+
+  /// Update candles history
+  void updateCandles(List<Candle> newCandles) {
+    candles = newCandles;
+    if (candles.isNotEmpty) lastPrice = candles.last.close;
+  }
+
+  /// Update probabilities
+  void updateProbabilities({double? longProb, double? shortProb}) {
+    if (longProb != null) probabilityLong = longProb;
+    if (shortProb != null) probabilityShort = shortProb;
+  }
+
+  /// Update indicator values
+  void updateIndicator(String name, double value) {
+    indicators[name] = value;
+  }
+}
