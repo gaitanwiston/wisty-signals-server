@@ -208,7 +208,6 @@ class MarketAnalysisService {
     if (candles.length < 2) return candles.last.close;
     final ema20 = _ema(candles, 20);
     if (ema20.length < 2) return candles.last.close;
-    // Multiply by minutesAhead and scale for timeframe
     return candles.last.close + (ema20.last - ema20[ema20.length - 2]) * minutesAhead * max(1, timeframeMinutes/1.0);
   }
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'dart:io';
+
 /// ================= CONFIG =================
 const String derivToken = "5Q0tS24UGTwKvDX";
 const int derivAppId = 90453;
@@ -111,6 +112,8 @@ class DerivService {
           final price = (tick['quote'] ?? 0).toDouble();
           final epoch = tick['epoch'] ?? 0;
           _addTickToCandles(symbol, price, epoch);
+
+          // notify contract streams
           _contractStreams.forEach((id, ctrl) {
             ctrl.add({"contract_id": id, "price": price, "epoch": epoch});
           });
@@ -133,9 +136,14 @@ class DerivService {
     }
   }
 
+  /// PUBLIC: safe access to cached candles
+  List<Candle> getCachedCandles(String pair) {
+    return _candles[_normalize(pair)] ?? [];
+  }
+
   Future<List<Candle>> getCandles(String pair, {int timeframe = 1}) async {
     await subscribeCandles(pair, timeframeMinutes: timeframe);
-    return _candles[_normalize(pair)] ?? [];
+    return getCachedCandles(pair);
   }
 
   /// ================= WRAPPERS =================
@@ -147,9 +155,8 @@ class DerivService {
   }
 
   Future<double> getLastPrice(String pair) async {
-    final norm = _normalize(pair);
-    final list = _candles[norm];
-    if (list != null && list.isNotEmpty) return list.last.close;
+    final list = getCachedCandles(pair);
+    if (list.isNotEmpty) return list.last.close;
     return 0.0;
   }
 
@@ -209,7 +216,6 @@ class DerivService {
 
     _send({"balance": 1, "subscribe": 1});
 
-    // Timeout safety
     Future.delayed(const Duration(seconds: 10), () {
       if (!completer.isCompleted) {
         completer.complete(0.0);
