@@ -8,7 +8,7 @@ import '../models/candle.dart' as model;
 enum MarketBias { buy, sell, none }
 enum EntryConfirmation { bullish, bearish, none }
 
-/// ================= MARKET ANALYSIS SERVICE v12 =================
+/// ================= MARKET ANALYSIS SERVICE =================
 class MarketAnalysisService {
   // ================= SINGLETON =================
   MarketAnalysisService._internal();
@@ -34,7 +34,6 @@ class MarketAnalysisService {
 
   final Set<String> _activePairs = {};
   Timer? _timer;
-  bool _listening = false;
 
   /// ================= START ANALYSIS =================
   Future<void> startPairs(List<String> pairs) async {
@@ -45,31 +44,22 @@ class MarketAnalysisService {
 
     for (var p in pairs) {
       _activePairs.add(p);
-      print("📩 Subscribing pair: $p");
+      print("📩 Subscribing: $p");
 
-      // Subscribe historical candles
-      final history = await deriv.fetchHistoricalCandles(p, minCandles, 60);
-      _handleHistory(p, history);
-
-      // Subscribe live ticks
-      await deriv.subscribeTicks(p);
+      // Subscribe historical candles and live ticks
+      await deriv.subscribeCandles(p);
       print("ℹ Historical + live ticks subscription done for $p");
-    }
 
-    // Single listener for all ticks
-    if (!_listening) {
+      // Listen live ticks from DerivService wsStream
       deriv.wsStream.listen((data) {
         final tick = data['tick'];
-        if (tick != null) {
-          final symbol = tick['symbol'];
-          if (!_activePairs.contains(symbol)) return;
+        if (tick != null && tick['symbol'] == p) {
           final price = double.tryParse(tick['quote'].toString()) ?? 0.0;
           final epoch = int.tryParse(tick['epoch'].toString()) ?? 0;
           if (epoch == 0) return;
-          _onTick(symbol, price, epoch);
+          _onTick(p, price, epoch);
         }
       });
-      _listening = true;
     }
 
     // Timer to process analysis every second
@@ -81,15 +71,6 @@ class MarketAnalysisService {
         _process(pair, candles);
       }
     });
-  }
-
-  /// ================= HANDLE HISTORICAL CANDLES =================
-  void _handleHistory(String pair, List<model.Candle> history) {
-    final list = _candlesM1.putIfAbsent(pair, () => []);
-    for (final h in history) {
-      _onTick(pair, h.close, h.epoch);
-    }
-    print('✅ Historical candles loaded: ${list.length} for $pair');
   }
 
   /// ================= PROCESS TICK =================
