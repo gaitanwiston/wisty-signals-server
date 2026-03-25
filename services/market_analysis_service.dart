@@ -27,7 +27,8 @@ class MarketAnalysisService {
   final Map<String, MarketAnalysisResult> _latest = {};
 
   // ================= CONFIG =================
-  int minCandles = 200;
+  int minCandles = 2000;
+  int maxCandles = 2500; // sliding window
   int rsiPeriod = 14;
   int atrPeriod = 14;
   double defaultRR = 2.0;
@@ -46,11 +47,21 @@ class MarketAnalysisService {
       _activePairs.add(p);
       print("📩 Subscribing: $p");
 
-      // Subscribe historical candles and live ticks
       await deriv.subscribeCandles(p);
       print("ℹ Historical + live ticks subscription done for $p");
 
-      // Listen live ticks from DerivService wsStream
+      // 🔥 Load history into analysis immediately
+      Future.delayed(const Duration(seconds: 2), () {
+        final history = deriv.getCachedCandles(p);
+        if (history.isNotEmpty) {
+          _candlesM1[p] = List.from(history);
+          print("📦 HISTORY INSERTED → $p candles=${history.length}");
+        } else {
+          print("❌ NO HISTORY FOUND FOR $p");
+        }
+      });
+
+      // Listen to live ticks
       deriv.wsStream.listen((data) {
         final tick = data['tick'];
         if (tick != null && tick['symbol'] == p) {
@@ -62,12 +73,14 @@ class MarketAnalysisService {
       });
     }
 
-    // Timer to process analysis every second
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       for (final pair in _activePairs) {
         final candles = _candlesM1[pair] ?? [];
         if (candles.length < minCandles) continue;
+
+        // 🔥 Debug: Processing pair
+        print("📦 PROCESSING $pair candles=${candles.length}");
         _process(pair, candles);
       }
     });
@@ -79,27 +92,17 @@ class MarketAnalysisService {
     final bucket = (epoch ~/ 60) * 60;
 
     if (list.isEmpty || list.last.epoch != bucket) {
-      if (list.isEmpty) {
-        for (int i = 0; i < minCandles; i++) {
-          final histEpoch = bucket - (minCandles - i) * 60;
-          list.add(model.Candle(
-            epoch: histEpoch,
-            open: price,
-            close: price,
-            high: price,
-            low: price,
-            volume: 1,
-          ));
-        }
-      } else {
-        list.add(model.Candle(
-          epoch: bucket,
-          open: price,
-          close: price,
-          high: price,
-          low: price,
-          volume: 1,
-        ));
+      list.add(model.Candle(
+        epoch: bucket,
+        open: price,
+        close: price,
+        high: price,
+        low: price,
+        volume: 1,
+      ));
+
+      if (list.length > maxCandles) {
+        list.removeAt(0);
       }
     } else {
       final last = list.last;
@@ -112,6 +115,9 @@ class MarketAnalysisService {
         volume: last.volume + 1,
       );
     }
+
+    // 🔥 Debug: live tick
+    print("📈 $pair LIVE candle update → total=${list.length}");
   }
 
   /// ================= PROCESS ANALYSIS =================
@@ -147,8 +153,8 @@ class MarketAnalysisService {
     final ema50 = _ema(m15, 50);
     final ema200 = _ema(m15, 200);
 
-    final emaBuy = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last > ema200.last;
-    final emaSell = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last < ema200.last;
+    final emaBuy = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last > ema200.last && ema50.last > ema50[ema50.length - 2];
+    final emaSell = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last < ema200.last && ema50.last < ema50[ema50.length - 2];
 
     final rsi = _rsi(m15, rsiPeriod);
     final conf = _confirmation(m1, bias);
@@ -163,8 +169,13 @@ class MarketAnalysisService {
     final canBuy = bias == MarketBias.buy && emaBuy && rsi > 50 && conf == EntryConfirmation.bullish && rrOk && sessionOk;
     final canSell = bias == MarketBias.sell && emaSell && rsi < 50 && conf == EntryConfirmation.bearish && rrOk && sessionOk;
 
-    if (canBuy || canSell) ok.add("All conditions met");
-    else {
+    /// 🔥 Debug: Full analysis
+    print("📊 $pair BUY=$canBuy SELL=$canSell candles=${m1.length} Reason: $no");
+    print("🧠 $pair Bias=$bias | EMA Buy=$emaBuy EMA Sell=$emaSell | RSI=${rsi.toStringAsFixed(2)} | Conf=$conf | RR=$rrOk | Session=$sessionOk");
+
+    if (canBuy || canSell) {
+      ok.add("All conditions met");
+    } else {
       if (bias == MarketBias.none) no.add("No structure");
       if (!(emaBuy || emaSell)) no.add("EMA fail");
       if (!(rsi > 50 || rsi < 50)) no.add("RSI fail");
@@ -208,7 +219,7 @@ class MarketAnalysisService {
     for (int i = c.length - p; i < c.length; i++) {
       final d = c[i].close - c[i - 1].close;
       if (d > 0) gain += d;
-      else loss -= d;
+      else loss += d.abs();
     }
     if (gain + loss == 0) return 50;
     final rs = gain / max(loss, 0.00001);
@@ -230,19 +241,28 @@ class MarketAnalysisService {
     return out;
   }
 
+  /// 🔹 Improved structure: trend-based over last 10 candles
   MarketBias _structure(List<model.Candle> c) {
     if (c.length < 10) return MarketBias.none;
-    if (c.last.high > c[c.length - 5].high && c.last.low > c[c.length - 5].low) return MarketBias.buy;
-    if (c.last.low < c[c.length - 5].low && c.last.high < c[c.length - 5].high) return MarketBias.sell;
+    int up = 0, down = 0;
+    for (int i = c.length - 10; i < c.length; i++) {
+      if (c[i].close > c[i].open) up++;
+      if (c[i].close < c[i].open) down++;
+    }
+    if (up >= 7) return MarketBias.buy;
+    if (down >= 7) return MarketBias.sell;
     return MarketBias.none;
   }
 
+  /// 🔹 Improved confirmation: last 3 candles trend
   EntryConfirmation _confirmation(List<model.Candle> c, MarketBias bias) {
-    if (c.length < 2) return EntryConfirmation.none;
+    if (c.length < 3) return EntryConfirmation.none;
     final last = c.last;
-    final prev = c[c.length - 2];
-    if (bias == MarketBias.buy && last.close > prev.high) return EntryConfirmation.bullish;
-    if (bias == MarketBias.sell && last.close < prev.low) return EntryConfirmation.bearish;
+    final prev2 = c[c.length - 2];
+    final prev3 = c[c.length - 3];
+
+    if (bias == MarketBias.buy && last.close > prev2.close && prev2.close > prev3.close) return EntryConfirmation.bullish;
+    if (bias == MarketBias.sell && last.close < prev2.close && prev2.close < prev3.close) return EntryConfirmation.bearish;
     return EntryConfirmation.none;
   }
 

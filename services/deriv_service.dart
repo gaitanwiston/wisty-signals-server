@@ -149,7 +149,7 @@ class DerivService {
     await _sendAndWait("history", {
       "ticks_history": symbol,
       "granularity": 60,
-      "count": 200,
+      "count": 20000,
       "end": "latest",
     });
 
@@ -193,8 +193,8 @@ class DerivService {
     }
 
     /// 🔥 LIMIT SIZE
-    if (list.length > 500) {
-      list.removeRange(0, list.length - 500);
+    if (list.length > 2500) {
+      list.removeRange(0, list.length - 2500);
     }
   }
 

@@ -1,19 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 
 import '../services/market_analysis_service.dart';
-import '../services/deriv_service.dart';
 import '../models/models.dart';
 
 /// ================= GLOBALS =================
 final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
+
+bool showOnlySignals = false; // 🔥 switch debug mode
 
 /// ================= ALL PAIRS =================
 final List<String> allPairs28 = [
@@ -31,37 +31,26 @@ void main() async {
   final server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
   print('📡 Signals WebSocket server running on ws://0.0.0.0:8080/signals');
 
-  // Start Market Analysis and Deriv tick subscription
+  /// 🔥 START MARKET ANALYSIS (ONLY ONCE)
   final service = MarketAnalysisService.instance;
-  print("🚀 Starting Market Analysis for all pairs...");
+  print("🚀 Starting Market Analysis...");
   await service.startPairs(allPairs28);
 
-  // Listen for analysis updates
+  /// 🔥 CLEAN ANALYSIS DEBUG
   service.analysisStream.listen((result) {
-    print("📊 Analysis Update: ${result.symbol} BUY=${result.canBuy} SELL=${result.canSell} candles=${result.candles.length}");
+    if (showOnlySignals) {
+      if (!result.canBuy && !result.canSell) return;
+    }
+
+    print("📊 ${result.symbol} "
+        "BUY=${result.canBuy} SELL=${result.canSell} "
+        "candles=${result.candles.length} "
+        "Reason=${result.reasonsFailed}");
+
     _broadcastUpdate(result.symbol);
   });
 
-  // Subscribe to Deriv tick streams and print real-time candle updates
-  final deriv = DerivService.instance;
-  await deriv.connect();
-  for (var pair in allPairs28) {
-    await deriv.subscribeCandles(pair);
-    print("📩 Subscribed to candles for $pair");
-
-    deriv.subscribeContract(pair, (data) {
-      final price = (data['price'] ?? 0).toDouble();
-      final epoch = (data['epoch'] ?? 0) as int;
-      print("💹 Tick: $pair price=$price epoch=$epoch");
-
-      final candles = deriv.getCachedCandles(pair);
-      if (candles.isNotEmpty) {
-        final last = candles.last;
-        print("🕒 Last candle for $pair: open=${last.open}, close=${last.close}, high=${last.high}, low=${last.low}, volume=${last.volume}");
-      }
-    });
-  }
-
+  /// ================= SERVER LOOP =================
   await for (HttpRequest request in server) {
     if (request.uri.path == '/signals') {
       if (!WebSocketTransformer.isUpgradeRequest(request)) {
@@ -89,17 +78,16 @@ void main() async {
 void _handleSocket(WebSocketChannel socket) {
   print('📡 Client connected');
 
-  // Send current data immediately
   _sendAllPairsLatest(socket);
 
-  // Subscribe to live analysis updates
   final sub = MarketAnalysisService.instance.analysisStream.listen(
     (_) => _sendAllPairsLatest(socket),
     onError: (err) => print("⚠ Analysis stream error: $err"),
   );
+
   _subscriptions[socket] = sub;
 
-  // Heartbeat every 15s
+  /// 🔥 HEARTBEAT
   _heartbeats[socket]?.cancel();
   _heartbeats[socket] = Timer.periodic(
     const Duration(seconds: 15),
@@ -119,7 +107,6 @@ void _handleSocket(WebSocketChannel socket) {
     },
   );
 
-  // Listen to client messages
   socket.stream.listen(
     (msg) => _handleClientMessage(socket, msg),
     onDone: () => _cleanup(socket),
@@ -127,7 +114,7 @@ void _handleSocket(WebSocketChannel socket) {
   );
 }
 
-/// ================= HANDLE CLIENT MESSAGE =================
+/// ================= HANDLE CLIENT =================
 void _handleClientMessage(WebSocketChannel socket, dynamic msg) {
   if (msg == 'ping') {
     try {
@@ -142,35 +129,38 @@ void _handleClientMessage(WebSocketChannel socket, dynamic msg) {
     final data = jsonDecode(msg);
     if (data['subscribe'] != null) {
       final pair = data['subscribe'].toString();
-      print('📩 Client requested subscription for pair: $pair');
+      print('📩 Client subscribed: $pair');
       _clients.putIfAbsent(pair, () => []).add(socket);
     }
   } catch (_) {}
 }
 
-/// ================= SEND ALL PAIRS =================
+/// ================= SEND ALL =================
 void _sendAllPairsLatest(WebSocketChannel socket) {
   final service = MarketAnalysisService.instance;
   final Map<String, dynamic> payload = {};
 
   for (var pair in allPairs28) {
-    final result = service.latestForAllPairsMap()[pair];
-    payload[pair] = result != null ? _buildPayload(result) : _emptyPayload(pair);
+    final result = service.latestFor(pair);
+    payload[pair] = result != null
+        ? _buildPayload(result)
+        : _emptyPayload(pair);
   }
 
-  print("📨 Sending payload to client: ${jsonEncode(payload)}");
+  print("📨 Sending update (${payload.length} pairs)");
   _sendSafe(socket, payload);
 }
 
-/// ================= BROADCAST SINGLE PAIR =================
+/// ================= BROADCAST =================
 void _broadcastUpdate(String pair) {
   final sockets = _clients[pair];
   if (sockets == null) return;
-  final service = MarketAnalysisService.instance;
-  final result = service.latestFor(pair);
+
+  final result = MarketAnalysisService.instance.latestFor(pair);
   if (result == null) return;
 
   final payload = _buildPayload(result);
+
   for (var socket in sockets) {
     _sendSafe(socket, payload);
   }
@@ -201,7 +191,7 @@ Map<String, dynamic> _buildPayload(MarketAnalysisResult analysis) {
   };
 }
 
-/// ================= EMPTY PAYLOAD =================
+/// ================= EMPTY =================
 Map<String, dynamic> _emptyPayload(String pair) {
   return {
     "symbol": pair,
@@ -218,7 +208,7 @@ Map<String, dynamic> _emptyPayload(String pair) {
   };
 }
 
-/// ================= SEND SAFE =================
+/// ================= SAFE SEND =================
 void _sendSafe(WebSocketChannel socket, Map<String, dynamic> data) {
   try {
     socket.sink.add(jsonEncode(data));
