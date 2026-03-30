@@ -20,14 +20,13 @@ class DerivService {
   bool _authorized = false;
   bool _connected = false;
 
-  /// 🔥 SINGLE SOURCE OF TRUTH STREAM
   final StreamController<Map<String, dynamic>> _controller =
       StreamController.broadcast();
 
   Stream<Map<String, dynamic>> get wsStream => _controller.stream;
 
   final Map<String, List<model.Candle>> _candles = {};
-  final Set<String> _subscribedTicks = {};
+  final Set<String> _subscribed = {};
 
   bool get isConnected => _authorized && _connected;
 
@@ -35,7 +34,6 @@ class DerivService {
   Future<void> connect([String? token]) async {
     if (_connected) return;
 
-    final t = token ?? derivToken;
     final uri = Uri.parse(
         "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
 
@@ -51,8 +49,6 @@ class DerivService {
 
           if (data is Map<String, dynamic>) {
             _handleMessage(data);
-
-            /// 🔥 BROADCAST TO EVERYONE
             _controller.add(data);
           }
         } catch (e) {
@@ -69,7 +65,7 @@ class DerivService {
       },
     );
 
-    _send({"authorize": t});
+    _send({"authorize": token ?? derivToken});
     print("📨 Authorization sent");
   }
 
@@ -82,15 +78,37 @@ class DerivService {
       case 'authorize':
         _authorized = true;
         print("✅ Authorized");
-
-        _send({"balance": 1, "subscribe": 1});
-        _send({"active_symbols": "brief", "product_type": "basic"});
         break;
 
+      /// 🔥 REAL CANDLES
+      case 'candles':
+        final echo = data['echo_req'] ?? {};
+        final symbol = echo['ticks_history'];
+
+        final candles = data['candles'] ?? [];
+        final list = <model.Candle>[];
+
+        for (final c in candles) {
+          list.add(model.Candle(
+            epoch: int.tryParse(c['epoch'].toString()) ?? 0,
+            open: double.tryParse(c['open'].toString()) ?? 0,
+            close: double.tryParse(c['close'].toString()) ?? 0,
+            high: double.tryParse(c['high'].toString()) ?? 0,
+            low: double.tryParse(c['low'].toString()) ?? 0,
+            volume: double.tryParse(c['volume'].toString()) ?? 0,
+          ));
+        }
+
+        _candles[symbol] = list;
+
+        print("✅ REAL candles loaded: ${list.length} for $symbol");
+        break;
+
+      /// 🔥 LIVE TICK UPDATE
       case 'tick':
         final tick = data['tick'];
         if (tick != null) {
-          final symbol = tick['symbol'].toString();
+          final symbol = tick['symbol'];
           final price =
               double.tryParse(tick['quote'].toString()) ?? 0.0;
           final epoch =
@@ -98,37 +116,6 @@ class DerivService {
 
           _updateCandles(symbol, price, epoch);
         }
-        break;
-
-      case 'history':
-        final echo = data['echo_req'] ?? {};
-        final symbol = echo['ticks_history'] ?? "unknown";
-
-        final prices =
-            data['history']['prices'] as List<dynamic>? ?? [];
-        final times =
-            data['history']['times'] as List<dynamic>? ?? [];
-
-        final hist = <model.Candle>[];
-
-        for (int i = 0; i < min(prices.length, times.length); i++) {
-          final price =
-              double.tryParse(prices[i].toString()) ?? 0.0;
-          final epoch =
-              int.tryParse(times[i].toString()) ?? 0;
-
-          hist.add(model.Candle(
-            epoch: epoch,
-            open: price,
-            close: price,
-            high: price,
-            low: price,
-            volume: 1,
-          ));
-        }
-
-        _candles[symbol] = hist;
-        print("✅ History loaded: ${hist.length} for $symbol");
         break;
 
       case 'balance':
@@ -141,19 +128,19 @@ class DerivService {
   Future<void> subscribeTicks(String symbol) async {
     if (!_connected) await connect();
 
-    if (_subscribedTicks.contains(symbol)) return;
+    if (_subscribed.contains(symbol)) return;
+    _subscribed.add(symbol);
 
-    _subscribedTicks.add(symbol);
-
-    /// request history
-    await _sendAndWait("history", {
+    /// 🔥 GET REAL HISTORY (IMPORTANT)
+    await _sendAndWait("candles", {
       "ticks_history": symbol,
+      "style": "candles",
       "granularity": 60,
-      "count": 20000,
+      "count": 5000,
       "end": "latest",
     });
 
-    /// subscribe ticks
+    /// 🔥 LIVE STREAM
     _send({
       "ticks": symbol,
       "subscribe": 1,
@@ -162,7 +149,7 @@ class DerivService {
     print("📡 Subscribed: $symbol");
   }
 
-  /// ================= UPDATE CANDLES =================
+  /// ================= UPDATE LIVE =================
   void _updateCandles(String symbol, double price, int epoch) {
     final list = _candles.putIfAbsent(symbol, () => []);
 
@@ -192,34 +179,16 @@ class DerivService {
       );
     }
 
-    /// 🔥 LIMIT SIZE
-    if (list.length > 2500) {
-      list.removeRange(0, list.length - 2500);
+    /// LIMIT SIZE
+    if (list.length > 10000) {
+      list.removeRange(0, list.length - 10000);
     }
   }
 
-  /// ================= FETCH HISTORY =================
-  Future<List<model.Candle>> fetchHistoricalCandles(
-      String symbol, int count, int tfSeconds) async {
-    final res = await _sendAndWait("candles", {
-      "ticks_history": symbol,
-      "granularity": tfSeconds,
-      "count": count,
-      "end": "latest",
-    });
-
-    final candles = res['candles'] ?? [];
-
-    return candles.map<model.Candle>((c) {
-      return model.Candle(
-        epoch: int.tryParse(c['epoch'].toString()) ?? 0,
-        open: double.tryParse(c['open'].toString()) ?? 0,
-        close: double.tryParse(c['close'].toString()) ?? 0,
-        high: double.tryParse(c['high'].toString()) ?? 0,
-        low: double.tryParse(c['low'].toString()) ?? 0,
-        volume: double.tryParse(c['volume'].toString()) ?? 0,
-      );
-    }).toList();
+  /// ================= GET CANDLES =================
+  Future<List<model.Candle>> getCandles(String pair,
+      {int timeframe = 1}) async {
+    return _candles[pair] ?? [];
   }
 
   /// ================= SEND =================
@@ -252,30 +221,15 @@ class DerivService {
 
     return completer.future;
   }
-/// ================= COMPATIBILITY METHODS =================
 
-Future<void> subscribeCandles(String pair) async {
-  await subscribeTicks(pair);
-}
+  /// ================= COMPATIBILITY =================
+  Future<void> subscribeCandles(String pair) async {
+    await subscribeTicks(pair);
+  }
 
-void subscribeContract(String pair, Function(Map<String, dynamic>) callback) {
-  // simple forward of ticks
-  wsStream.listen((data) {
-    if (data['msg_type'] == 'tick' &&
-        data['tick'] != null &&
-        data['tick']['symbol'] == pair) {
-      callback({
-        "symbol": pair,
-        "price": data['tick']['quote'],
-        "epoch": data['tick']['epoch'],
-      });
-    }
-  });
-}
-
-List<model.Candle> getCachedCandles(String pair) {
-  return _candles[pair] ?? [];
-}
+  List<model.Candle> getCachedCandles(String pair) {
+    return _candles[pair] ?? [];
+  }
 
   /// ================= RECONNECT =================
   Future<void> _reconnect() async {

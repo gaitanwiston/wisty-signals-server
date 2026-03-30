@@ -1,12 +1,14 @@
-//import 'package:flutter/foundation.dart';
 import 'candle.dart';
 
 class MarketAnalysisResult {
   final String symbol;
+
+  // Candles by timeframe
   final List<Candle> candles;        // M1 candles
-  final List<Candle>? candlesM5;     // optional
-  final List<Candle>? candlesM15;    // optional
-  final List<Candle>? candlesM30;    // optional
+  final List<Candle> candlesM5;
+  final List<Candle> candlesM15;
+  final List<Candle> candlesM30;
+  final List<Candle> candlesH1;
 
   // ================= Market structure & filters =================
   final bool structureValid;
@@ -42,9 +44,10 @@ class MarketAnalysisResult {
   MarketAnalysisResult({
     required this.symbol,
     required this.candles,
-    this.candlesM5,
-    this.candlesM15,
-    this.candlesM30,
+    List<Candle>? candlesM5,
+    List<Candle>? candlesM15,
+    List<Candle>? candlesM30,
+    List<Candle>? candlesH1,
     this.structureValid = false,
     this.emaValid = false,
     this.rsiValid = false,
@@ -64,7 +67,11 @@ class MarketAnalysisResult {
     List<String>? reasonsFailed,
     double? stopLoss,
     double? takeProfit,
-  })  : ema50 = ema50 ?? [],
+  })  : candlesM5 = candlesM5 ?? [],
+        candlesM15 = candlesM15 ?? [],
+        candlesM30 = candlesM30 ?? [],
+        candlesH1 = candlesH1 ?? [],
+        ema50 = ema50 ?? [],
         ema200 = ema200 ?? [],
         indicators = indicators ?? {},
         entryCandles = entryCandles ?? [],
