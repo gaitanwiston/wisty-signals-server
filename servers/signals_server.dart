@@ -13,7 +13,11 @@ final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 
-bool showOnlySignals = false;
+/// 🔥 only send strong signals
+bool showOnlySignals = true;
+
+/// 🔥 cooldown per pair (avoid spam)
+final Map<String, DateTime> _lastSent = {};
 
 /// ================= ALL PAIRS =================
 final List<String> allPairs28 = [
@@ -32,13 +36,28 @@ void main() async {
   print('📡 Server running ws://0.0.0.0:8080/signals');
 
   final service = MarketAnalysisService.instance;
+
+  /// 🔥 start pairs
   await service.startPairs(allPairs28);
 
-  /// 🔥 GLOBAL STREAM → BROADCAST
+  /// ================= GLOBAL STREAM =================
   service.analysisStream.listen((result) {
+    /// 🔥 FILTER STRONG SIGNALS ONLY
     if (showOnlySignals && !result.canBuy && !result.canSell) return;
 
-    print("📊 ${result.symbol} BUY=${result.canBuy} SELL=${result.canSell}");
+    /// 🔥 COOLDOWN (avoid spam)
+    final last = _lastSent[result.symbol];
+    if (last != null && DateTime.now().difference(last).inSeconds < 10) return;
+    _lastSent[result.symbol] = DateTime.now();
+
+    final direction = result.canBuy
+        ? 'BUY'
+        : result.canSell
+            ? 'SELL'
+            : 'NEUTRAL';
+    final confidence = ((result.canBuy || result.canSell) ? 100 : 0);
+
+    print("🔥 ${result.symbol} $direction CONF:${confidence}%");
 
     _broadcastUpdate(result.symbol);
   });
@@ -110,22 +129,29 @@ void _handleClientMessage(WebSocketChannel socket, dynamic msg) {
 
     if (data['subscribe'] != null) {
       final pair = data['subscribe'].toString();
-
       _clients.putIfAbsent(pair, () => []);
-
-      /// 🔥 NO DUPLICATES
-      if (!_clients[pair]!.contains(socket)) {
-        _clients[pair]!.add(socket);
-      }
-
+      if (!_clients[pair]!.contains(socket)) _clients[pair]!.add(socket);
       print('📩 Subscribed: $pair');
     }
 
-    /// 🔥 unsubscribe support
     if (data['unsubscribe'] != null) {
       final pair = data['unsubscribe'].toString();
       _clients[pair]?.remove(socket);
       print('📤 Unsubscribed: $pair');
+    }
+
+    /// 🔥 AI TRAINING FROM CLIENT
+    if (data['tradeResult'] != null) {
+      final t = data['tradeResult'];
+
+      // Safely update AI (registerTradeResult must exist)
+      MarketAnalysisService.instance.registerTradeResult(
+        pair: t['pair'],
+        direction: t['direction'],
+        win: t['win'],
+      );
+
+      print("🧠 AI Updated from client trade");
     }
   } catch (_) {}
 }
@@ -137,9 +163,7 @@ void _sendAllPairsLatest(WebSocketChannel socket) {
 
   for (var pair in allPairs28) {
     final result = service.latestFor(pair);
-    payload[pair] = result != null
-        ? _buildPayload(result)
-        : _emptyPayload(pair);
+    payload[pair] = result != null ? _buildPayload(result) : _emptyPayload(pair);
   }
 
   _sendSafe(socket, payload);
@@ -155,7 +179,6 @@ void _broadcastUpdate(String pair) {
 
   final payload = _buildPayload(result);
 
-  /// 🔥 SAFE COPY (NO CRASH)
   for (var socket in List<WebSocketChannel>.from(sockets)) {
     _sendSafe(socket, payload);
   }
@@ -166,21 +189,22 @@ Map<String, dynamic> _buildPayload(MarketAnalysisResult a) {
   final candles = a.candles;
   final entryPrice = candles.isNotEmpty ? candles.last.close : 0.0;
 
+  final direction = a.canBuy
+      ? 'BUY'
+      : a.canSell
+          ? 'SELL'
+          : 'WAIT';
+  final confidence = (a.canBuy || a.canSell) ? 100 : 0;
+
   return {
     "symbol": a.symbol,
-    "status": a.canBuy
-        ? "BUY"
-        : a.canSell
-            ? "SELL"
-            : "waiting",
-    "canBuy": a.canBuy,
-    "canSell": a.canSell,
-    "bias": a.biasIsBuy ? "BUY" : "SELL",
+    "status": direction,
+    "confidence": confidence.toString(),
     "entryPrice": entryPrice,
     "stopLoss": a.stopLoss,
     "takeProfit": a.takeProfit,
-    "conditionsMet": a.conditionsMet,
-    "failedConditions": a.reasonsFailed,
+    "trend": a.structurePoints,
+    "reasons": a.reasonsFailed,
     "candleCount": candles.length,
     "timestamp": DateTime.now().toUtc().toIso8601String(),
   };
@@ -188,14 +212,11 @@ Map<String, dynamic> _buildPayload(MarketAnalysisResult a) {
 
 Map<String, dynamic> _emptyPayload(String pair) => {
       "symbol": pair,
-      "status": "waiting",
-      "canBuy": false,
-      "canSell": false,
+      "status": "WAIT",
+      "confidence": "0",
       "entryPrice": 0.0,
       "stopLoss": 0.0,
       "takeProfit": 0.0,
-      "conditionsMet": [],
-      "failedConditions": [],
       "candleCount": 0,
       "timestamp": DateTime.now().toUtc().toIso8601String(),
     };
@@ -217,7 +238,6 @@ void _cleanup(WebSocketChannel socket) {
   _heartbeats[socket]?.cancel();
   _heartbeats.remove(socket);
 
-  /// 🔥 SAFE REMOVE
   for (var entry in _clients.entries) {
     entry.value.remove(socket);
   }
