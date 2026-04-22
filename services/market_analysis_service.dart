@@ -31,7 +31,7 @@ class MarketAnalysisService {
   int minCandles = 120;
   int signalCooldownSec = 20;
 
-  // ================= START PAIR =================
+  // ================= START =================
   Future<void> startPair(String pair) async {
     final deriv = DerivService.instance;
     await deriv.subscribeCandles(pair);
@@ -73,7 +73,7 @@ class MarketAnalysisService {
     _controller.add(result);
   }
 
-  // ================= CORE ANALYSIS =================
+  // ================= CORE =================
   MarketAnalysisResult _analyze(
     String pair, {
     required List<Candle> m1,
@@ -91,18 +91,31 @@ class MarketAnalysisService {
     final rsi = _calcRSI(m15, rsiPeriod);
     final atr = _calcATR(m15, 14);
 
-    final emaBuy = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last > ema200.last;
-    final emaSell = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last < ema200.last;
+    // ================= HARD FILTERS =================
 
-    final conf = _confirmation(m1, biasM15);
+    if (biasH1 == MarketBias.none || biasM30 == MarketBias.none) {
+      return _noTrade(pair, m1, m5, m15, m30, h1, atr, "No HTF trend");
+    }
+
+    if (atr < 0.0002) {
+      return _noTrade(pair, m1, m5, m15, m30, h1, atr, "Low volatility");
+    }
+
+    if (rsi > 45 && rsi < 55) {
+      return _noTrade(pair, m1, m5, m15, m30, h1, atr, "RSI indecision");
+    }
+
+    bool emaBuy = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last > ema200.last;
+    bool emaSell = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last < ema200.last;
+
+    final conf = _strongConfirmation(m1, biasM15);
 
     // ================= SCORING =================
     int scoreBuy = 0;
     int scoreSell = 0;
 
-    // Trend alignment
-    if (biasH1 == MarketBias.buy) scoreBuy += 2;
-    if (biasH1 == MarketBias.sell) scoreSell += 2;
+    if (biasH1 == MarketBias.buy) scoreBuy += 3;
+    if (biasH1 == MarketBias.sell) scoreSell += 3;
 
     if (biasM30 == MarketBias.buy) scoreBuy += 2;
     if (biasM30 == MarketBias.sell) scoreSell += 2;
@@ -110,37 +123,40 @@ class MarketAnalysisService {
     if (biasM15 == MarketBias.buy) scoreBuy += 1;
     if (biasM15 == MarketBias.sell) scoreSell += 1;
 
-    // EMA
     if (emaBuy) scoreBuy += 2;
     if (emaSell) scoreSell += 2;
 
-    // RSI zones
-    if (rsi > 55 && rsi < 70) scoreBuy += 1;
-    if (rsi < 45 && rsi > 30) scoreSell += 1;
+    if (rsi >= 55) scoreBuy += 2;
+    if (rsi <= 45) scoreSell += 2;
 
-    // Confirmation
-    if (conf == EntryConfirmation.bullish) scoreBuy += 2;
-    if (conf == EntryConfirmation.bearish) scoreSell += 2;
+    if (conf == EntryConfirmation.bullish) scoreBuy += 3;
+    if (conf == EntryConfirmation.bearish) scoreSell += 3;
 
-    // Volatility filter
-    if (atr > 0.0003) {
-      scoreBuy += 1;
-      scoreSell += 1;
-    }
+    // ================= DOMINANCE =================
+    int diff = (scoreBuy - scoreSell).abs();
 
-    // ================= FINAL DECISION =================
-    bool canBuy = scoreBuy >= 6;
-    bool canSell = scoreSell >= 6;
+    bool strongBuy = scoreBuy >= 8 && scoreBuy > scoreSell && diff >= 3;
+    bool strongSell = scoreSell >= 8 && scoreSell > scoreBuy && diff >= 3;
 
+    bool canBuy = strongBuy;
+    bool canSell = strongSell;
+
+    // ================= COOLDOWN =================
     final now = DateTime.now();
     final lastTime = _lastSignalTime[pair];
+
     if (lastTime != null &&
         now.difference(lastTime).inSeconds < signalCooldownSec) {
       canBuy = false;
       canSell = false;
     }
 
-    if (canBuy || canSell) _lastSignalTime[pair] = now;
+    if (canBuy || canSell) {
+      _lastSignalTime[pair] = now;
+    }
+
+    // ================= PROBABILITY =================
+    double probability = max(scoreBuy, scoreSell) / 12;
 
     double stopLoss = atr * 1.5;
     double takeProfit = atr * 3;
@@ -164,7 +180,13 @@ class MarketAnalysisService {
       biasIsBuy: biasM30 == MarketBias.buy,
       ema50: ema50,
       ema200: ema200,
-      indicators: {'rsi': rsi, 'atr': atr},
+      indicators: {
+  'rsi': rsi,
+  'atr': atr,
+  'probability': probability,
+  'scoreBuy': scoreBuy.toDouble(),
+  'scoreSell': scoreSell.toDouble(),
+},
       entryCandles: [m1.length - 2],
       structurePoints: const [],
       conditionsMet: [],
@@ -174,36 +196,96 @@ class MarketAnalysisService {
     );
   }
 
+  // ================= NO TRADE =================
+  MarketAnalysisResult _noTrade(
+    String pair,
+    List<Candle> m1,
+    List<Candle> m5,
+    List<Candle> m15,
+    List<Candle> m30,
+    List<Candle> h1,
+    double atr,
+    String reason,
+  ) {
+    return MarketAnalysisResult(
+      symbol: pair,
+      candles: m1,
+      candlesM5: m5,
+      candlesM15: m15,
+      candlesM30: m30,
+      candlesH1: h1,
+      structureValid: false,
+      emaValid: false,
+      rsiValid: false,
+      confirmationValid: false,
+      filtersValid: false,
+      canBuy: false,
+      canSell: false,
+      structureBuy: false,
+      structureSell: false,
+      biasIsBuy: false,
+      ema50: const [],
+      ema200: const [],
+      indicators: {'atr': atr},
+      entryCandles: const [],
+      structurePoints: const [],
+      conditionsMet: const [],
+      reasonsFailed: [reason],
+      stopLoss: 0,
+      takeProfit: 0,
+    );
+  }
+
   // ================= STRUCTURE =================
   MarketBias _detectStructure(List<Candle> c) {
     if (c.length < 20) return MarketBias.none;
     final last = c[c.length - 2];
     final prev = c[c.length - 3];
+
     if (last.high > prev.high && last.low > prev.low) return MarketBias.buy;
     if (last.high < prev.high && last.low < prev.low) return MarketBias.sell;
+
     return MarketBias.none;
   }
 
-  // ================= CONFIRMATION =================
-  EntryConfirmation _confirmation(List<Candle> c, MarketBias bias) {
+  // ================= STRONG CONFIRMATION =================
+  EntryConfirmation _strongConfirmation(List<Candle> c, MarketBias bias) {
     if (c.length < 3) return EntryConfirmation.none;
+
     final last = c[c.length - 2];
     final prev = c[c.length - 3];
-    final strong = (last.close - last.open).abs() > (last.high - last.low) * 0.4;
-    if (bias == MarketBias.buy && last.close > prev.high && strong) return EntryConfirmation.bullish;
-    if (bias == MarketBias.sell && last.close < prev.low && strong) return EntryConfirmation.bearish;
+
+    double body = (last.close - last.open).abs();
+    double range = (last.high - last.low);
+
+    bool strongBody = body > range * 0.6;
+
+    bool bullishBreak = last.close > prev.high;
+    bool bearishBreak = last.close < prev.low;
+
+    if (bias == MarketBias.buy && strongBody && bullishBreak) {
+      return EntryConfirmation.bullish;
+    }
+
+    if (bias == MarketBias.sell && strongBody && bearishBreak) {
+      return EntryConfirmation.bearish;
+    }
+
     return EntryConfirmation.none;
   }
 
   // ================= RSI =================
   double _calcRSI(List<Candle> c, int period) {
     if (c.length < period + 1) return 50;
+
     double gain = 0, loss = 0;
+
     for (int i = c.length - period; i < c.length; i++) {
       final diff = c[i].close - c[i - 1].close;
       if (diff > 0) gain += diff;
       if (diff < 0) loss -= diff;
     }
+
     final rs = gain / max(loss, 0.00001);
     return 100 - (100 / (1 + rs));
   }
@@ -211,34 +293,48 @@ class MarketAnalysisService {
   // ================= ATR =================
   double _calcATR(List<Candle> c, int period) {
     if (c.length < period + 1) return 0;
+
     double sum = 0;
+
     for (int i = c.length - period; i < c.length; i++) {
       sum += (c[i].high - c[i].low);
     }
+
     return sum / period;
   }
 
   // ================= EMA =================
   List<double> _calcEMA(List<Candle> c, int period) {
     if (c.length < period) return [];
+
     double sma = 0;
-    for (int i = c.length - period; i < c.length; i++) sma += c[i].close;
+
+    for (int i = c.length - period; i < c.length; i++) {
+      sma += c[i].close;
+    }
+
     sma /= period;
+
     final k = 2 / (period + 1);
     double ema = sma;
+
     final out = [ema];
+
     for (int i = c.length - period + 1; i < c.length; i++) {
       ema = c[i].close * k + ema * (1 - k);
       out.add(ema);
     }
+
     return out;
   }
 
   // ================= AGGREGATE =================
   List<Candle> _aggregate(List<Candle> c, int tf) {
     final out = <Candle>[];
+
     for (final candle in c) {
       final bucket = (candle.epoch ~/ (tf * 60)) * (tf * 60);
+
       if (out.isEmpty || out.last.epoch != bucket) {
         out.add(Candle(
           epoch: bucket,
@@ -250,6 +346,7 @@ class MarketAnalysisService {
         ));
       } else {
         final last = out.last;
+
         out[out.length - 1] = Candle(
           epoch: last.epoch,
           open: last.open,
@@ -260,6 +357,7 @@ class MarketAnalysisService {
         );
       }
     }
+
     return out;
   }
 
@@ -276,13 +374,12 @@ class MarketAnalysisService {
     return p;
   }
 
-  // ================= REGISTER TRADE RESULT =================
+  // ================= TRADE FEEDBACK =================
   void registerTradeResult({
     required String pair,
     required String direction,
     required bool win,
   }) {
-    print("🧠 Trade result received: $pair, direction=$direction, win=$win");
-    // Hapa unaweza update AI learning / historical stats
+    print("🧠 Trade result: $pair | $direction | win=$win");
   }
 }
