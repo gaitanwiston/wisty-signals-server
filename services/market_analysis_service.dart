@@ -14,7 +14,8 @@ class MarketAnalysisService {
   factory MarketAnalysisService() => instance;
 
   // ================= STREAM =================
-  final StreamController<MarketAnalysisResult> _controller = StreamController.broadcast();
+  final StreamController<MarketAnalysisResult> _controller =
+      StreamController.broadcast();
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
   // ================= STORAGE =================
@@ -29,14 +30,14 @@ class MarketAnalysisService {
   // ================= CONFIG =================
   int rsiPeriod = 14;
   int minCandles = 120;
-  int signalCooldownSec = 20;
+  int signalCooldownSec = 30;
 
   // ================= START =================
   Future<void> startPair(String pair) async {
     final deriv = DerivService.instance;
     await deriv.subscribeCandles(pair);
 
-    Timer.periodic(const Duration(seconds: 1), (_) async {
+    Timer.periodic(const Duration(seconds: 2), (_) async {
       final candles = await deriv.getCandles(pair, timeframe: 1);
       if (candles.length >= minCandles) {
         _processPair(pair, candles);
@@ -73,7 +74,7 @@ class MarketAnalysisService {
     _controller.add(result);
   }
 
-  // ================= CORE =================
+  // ================= CORE ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair, {
     required List<Candle> m1,
@@ -92,21 +93,25 @@ class MarketAnalysisService {
     final atr = _calcATR(m15, 14);
 
     // ================= HARD FILTERS =================
-
     if (biasH1 == MarketBias.none || biasM30 == MarketBias.none) {
       return _noTrade(pair, m1, m5, m15, m30, h1, atr, "No HTF trend");
     }
 
-    if (atr < 0.0002) {
+    if (atr < 0.0003) {
       return _noTrade(pair, m1, m5, m15, m30, h1, atr, "Low volatility");
     }
 
-    if (rsi > 45 && rsi < 55) {
-      return _noTrade(pair, m1, m5, m15, m30, h1, atr, "RSI indecision");
+    if (rsi > 48 && rsi < 52) {
+      return _noTrade(pair, m1, m5, m15, m30, h1, atr, "RSI chop zone");
     }
 
-    bool emaBuy = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last > ema200.last;
-    bool emaSell = ema50.isNotEmpty && ema200.isNotEmpty && ema50.last < ema200.last;
+    bool emaBuy = ema50.isNotEmpty &&
+        ema200.isNotEmpty &&
+        ema50.last > ema200.last;
+
+    bool emaSell = ema50.isNotEmpty &&
+        ema200.isNotEmpty &&
+        ema50.last < ema200.last;
 
     final conf = _strongConfirmation(m1, biasM15);
 
@@ -120,11 +125,11 @@ class MarketAnalysisService {
     if (biasM30 == MarketBias.buy) scoreBuy += 2;
     if (biasM30 == MarketBias.sell) scoreSell += 2;
 
-    if (biasM15 == MarketBias.buy) scoreBuy += 1;
-    if (biasM15 == MarketBias.sell) scoreSell += 1;
+    if (biasM15 == MarketBias.buy) scoreBuy += 2;
+    if (biasM15 == MarketBias.sell) scoreSell += 2;
 
-    if (emaBuy) scoreBuy += 2;
-    if (emaSell) scoreSell += 2;
+    if (emaBuy) scoreBuy += 3;
+    if (emaSell) scoreSell += 3;
 
     if (rsi >= 55) scoreBuy += 2;
     if (rsi <= 45) scoreSell += 2;
@@ -132,14 +137,25 @@ class MarketAnalysisService {
     if (conf == EntryConfirmation.bullish) scoreBuy += 3;
     if (conf == EntryConfirmation.bearish) scoreSell += 3;
 
-    // ================= DOMINANCE =================
     int diff = (scoreBuy - scoreSell).abs();
 
-    bool strongBuy = scoreBuy >= 8 && scoreBuy > scoreSell && diff >= 3;
-    bool strongSell = scoreSell >= 8 && scoreSell > scoreBuy && diff >= 3;
+    bool strongBuy = scoreBuy >= 10 && scoreBuy > scoreSell && diff >= 4;
+    bool strongSell = scoreSell >= 10 && scoreSell > scoreBuy && diff >= 4;
 
-    bool canBuy = strongBuy;
-    bool canSell = strongSell;
+    // ================= AI PROBABILITY ENGINE =================
+    double probability = _aiProbability(
+      scoreBuy: scoreBuy,
+      scoreSell: scoreSell,
+      rsi: rsi,
+      atr: atr,
+      ema50: ema50,
+      ema200: ema200,
+    );
+
+    bool aiApproved = probability >= 85;
+
+    bool canBuy = strongBuy && aiApproved;
+    bool canSell = strongSell && aiApproved;
 
     // ================= COOLDOWN =================
     final now = DateTime.now();
@@ -154,9 +170,6 @@ class MarketAnalysisService {
     if (canBuy || canSell) {
       _lastSignalTime[pair] = now;
     }
-
-    // ================= PROBABILITY =================
-    double probability = max(scoreBuy, scoreSell) / 12;
 
     double stopLoss = atr * 1.5;
     double takeProfit = atr * 3;
@@ -181,12 +194,12 @@ class MarketAnalysisService {
       ema50: ema50,
       ema200: ema200,
       indicators: {
-  'rsi': rsi,
-  'atr': atr,
-  'probability': probability,
-  'scoreBuy': scoreBuy.toDouble(),
-  'scoreSell': scoreSell.toDouble(),
-},
+        'rsi': rsi,
+        'atr': atr,
+        'probability': probability,
+        'scoreBuy': scoreBuy.toDouble(),
+        'scoreSell': scoreSell.toDouble(),
+      },
       entryCandles: [m1.length - 2],
       structurePoints: const [],
       conditionsMet: [],
@@ -194,6 +207,50 @@ class MarketAnalysisService {
       stopLoss: stopLoss,
       takeProfit: takeProfit,
     );
+  }
+
+  // ================= AI PROBABILITY ENGINE =================
+  double _aiProbability({
+    required int scoreBuy,
+    required int scoreSell,
+    required double rsi,
+    required double atr,
+    required List<double> ema50,
+    required List<double> ema200,
+  }) {
+    double base = max(scoreBuy, scoreSell) * 6;
+
+    int diff = (scoreBuy - scoreSell).abs();
+
+    // trend quality
+    if (ema50.isNotEmpty &&
+        ema200.isNotEmpty &&
+        (ema50.last - ema200.last).abs() > 0) {
+      base += 10;
+    }
+
+    // RSI logic
+    if (rsi > 65 || rsi < 35) {
+      base += 20;
+    } else if (rsi > 48 && rsi < 52) {
+      base -= 25;
+    }
+
+    // volatility
+    if (atr > 0.0003 && atr < 0.0012) {
+      base += 10;
+    } else {
+      base -= 15;
+    }
+
+    // dominance
+    if (diff >= 4) {
+      base += 10;
+    } else {
+      base -= 10;
+    }
+
+    return base.clamp(0, 100);
   }
 
   // ================= NO TRADE =================
@@ -239,16 +296,26 @@ class MarketAnalysisService {
   // ================= STRUCTURE =================
   MarketBias _detectStructure(List<Candle> c) {
     if (c.length < 20) return MarketBias.none;
-    final last = c[c.length - 2];
-    final prev = c[c.length - 3];
 
-    if (last.high > prev.high && last.low > prev.low) return MarketBias.buy;
-    if (last.high < prev.high && last.low < prev.low) return MarketBias.sell;
+    int bullish = 0;
+    int bearish = 0;
+
+    for (int i = c.length - 10; i < c.length - 2; i++) {
+      if (c[i].high > c[i - 1].high && c[i].low > c[i - 1].low) {
+        bullish++;
+      }
+      if (c[i].high < c[i - 1].high && c[i].low < c[i - 1].low) {
+        bearish++;
+      }
+    }
+
+    if (bullish >= 6) return MarketBias.buy;
+    if (bearish >= 6) return MarketBias.sell;
 
     return MarketBias.none;
   }
 
-  // ================= STRONG CONFIRMATION =================
+  // ================= CONFIRMATION =================
   EntryConfirmation _strongConfirmation(List<Candle> c, MarketBias bias) {
     if (c.length < 3) return EntryConfirmation.none;
 
@@ -336,14 +403,7 @@ class MarketAnalysisService {
       final bucket = (candle.epoch ~/ (tf * 60)) * (tf * 60);
 
       if (out.isEmpty || out.last.epoch != bucket) {
-        out.add(Candle(
-          epoch: bucket,
-          open: candle.open,
-          close: candle.close,
-          high: candle.high,
-          low: candle.low,
-          volume: candle.volume,
-        ));
+        out.add(candle);
       } else {
         final last = out.last;
 
@@ -374,7 +434,7 @@ class MarketAnalysisService {
     return p;
   }
 
-  // ================= TRADE FEEDBACK =================
+  // ================= FEEDBACK =================
   void registerTradeResult({
     required String pair,
     required String direction,
