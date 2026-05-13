@@ -13,9 +13,9 @@ class MarketAnalysisService {
   MarketAnalysisService._internal();
   static final MarketAnalysisService instance = MarketAnalysisService._internal();
 
-  // ================= STREAM =================
   final StreamController<MarketAnalysisResult> _controller =
       StreamController.broadcast();
+
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
   // ================= STORAGE =================
@@ -82,19 +82,12 @@ class MarketAnalysisService {
 
     _latest[p] = result;
 
-    // 🔥 ONLY EMIT WHEN MEANINGFUL CHANGE
-    if (result.canBuy || result.canSell || _latestChanged(p, result)) {
+    if (result.canBuy || result.canSell) {
       _controller.add(result);
     }
   }
 
-  bool _latestChanged(String pair, MarketAnalysisResult r) {
-    final old = _latest[pair];
-    if (old == null) return true;
-    return old.canBuy != r.canBuy || old.canSell != r.canSell;
-  }
-
-  // ================= CORE ANALYSIS =================
+  // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
     String pair, {
     required List<Candle> m1,
@@ -112,7 +105,6 @@ class MarketAnalysisService {
     final rsi = _rsi(m15, rsiPeriod);
     final atr = _atr(m15, 14);
 
-    // ================= FILTERS =================
     if (biasH1 == MarketBias.none || biasM30 == MarketBias.none) {
       return _noTrade(pair, m1, m5, m15, m30, h1, "No HTF trend");
     }
@@ -122,7 +114,7 @@ class MarketAnalysisService {
     }
 
     if (rsi > 48 && rsi < 52) {
-      return _noTrade(pair, m1, m5, m15, m30, h1, "RSI chop");
+      return _noTrade(pair, m1, m5, m15, m30, h1, "RSI chop zone");
     }
 
     final emaBuy = ema50.isNotEmpty &&
@@ -135,7 +127,6 @@ class MarketAnalysisService {
 
     final confirm = _confirmation(m1, biasM15);
 
-    // ================= SCORE =================
     int buy = 0;
     int sell = 0;
 
@@ -162,13 +153,12 @@ class MarketAnalysisService {
     final strongBuy = buy >= 10 && buy > sell && diff >= 4;
     final strongSell = sell >= 10 && sell > buy && diff >= 4;
 
-    final probability = _probability(buy, sell, rsi, atr);
+    final probability = _aiProbability(buy, sell, rsi, atr);
     final aiOk = probability >= 80;
 
     bool canBuy = strongBuy && aiOk;
     bool canSell = strongSell && aiOk;
 
-    // ================= COOLDOWN =================
     final now = DateTime.now();
     final last = _lastSignalTime[pair];
 
@@ -202,8 +192,8 @@ class MarketAnalysisService {
         'rsi': rsi,
         'atr': atr,
         'probability': probability,
-        'buyScore': buy,
-        'sellScore': sell,
+        'buyScore': buy.toDouble(),
+        'sellScore': sell.toDouble(),
       },
       entryCandles: const [],
       structurePoints: const [],
@@ -217,13 +207,24 @@ class MarketAnalysisService {
     );
   }
 
+  // ================= AI =================
+  double _aiProbability(int buy, int sell, double rsi, double atr) {
+    double score = max(buy, sell) * 7;
+
+    if (rsi > 60 || rsi < 40) score += 15;
+    if (atr > 0.0003 && atr < 0.0012) score += 10;
+    if ((buy - sell).abs() >= 4) score += 10;
+
+    return score.clamp(0, 100);
+  }
+
   // ================= INDICATORS =================
-  double _rsi(List<Candle> c, int period) {
-    if (c.length < period + 1) return 50;
+  double _rsi(List<Candle> c, int p) {
+    if (c.length < p + 1) return 50;
 
     double gain = 0, loss = 0;
 
-    for (int i = c.length - period; i < c.length; i++) {
+    for (int i = c.length - p; i < c.length; i++) {
       final d = c[i].close - c[i - 1].close;
       if (d > 0) gain += d;
       if (d < 0) loss -= d;
@@ -265,15 +266,40 @@ class MarketAnalysisService {
     return out;
   }
 
-  double _probability(int buy, int sell, double rsi, double atr) {
-    double score = max(buy, sell) * 7;
+  // ================= AGGREGATION (FIXED) =================
+  List<Candle> _aggregate(List<Candle> c, int tf) {
+    final out = <Candle>[];
 
-    if (rsi > 60 || rsi < 40) score += 15;
-    if (atr > 0.0003 && atr < 0.0012) score += 10;
+    for (final candle in c) {
+      final bucket = (candle.epoch ~/ (tf * 60)) * (tf * 60);
 
-    if ((buy - sell).abs() >= 4) score += 10;
+      if (out.isEmpty || out.last.epoch != bucket) {
+        out.add(candle);
+      } else {
+        final last = out.last;
 
-    return score.clamp(0, 100);
+        out[out.length - 1] = Candle(
+          epoch: last.epoch,
+          open: last.open,
+          close: candle.close,
+          high: max(last.high, candle.high),
+          low: min(last.low, candle.low),
+          volume: (last.volume + candle.volume),
+        );
+      }
+    }
+
+    return out;
+  }
+
+  // ================= FEEDBACK (FIXED) =================
+  void registerTradeResult({
+    required String pair,
+    required String direction,
+    required bool win,
+  }) {
+    final p = _normalize(pair);
+    print("🧠 Feedback: $p | $direction | win=$win");
   }
 
   // ================= STRUCTURE =================
@@ -315,7 +341,6 @@ class MarketAnalysisService {
     return EntryConfirmation.none;
   }
 
-  // ================= LATEST =================
   MarketAnalysisResult? latestFor(String pair) {
     final p = _normalize(pair);
     return _latest[p];
@@ -327,6 +352,7 @@ class MarketAnalysisService {
     return p;
   }
 
+  // ================= NO TRADE =================
   MarketAnalysisResult _noTrade(
     String pair,
     List<Candle> m1,
@@ -352,7 +378,7 @@ class MarketAnalysisService {
       filtersValid: false,
       ema50: const [],
       ema200: const [],
-      indicators: {},
+      indicators: const {},
       entryCandles: const [],
       structurePoints: const [],
       conditionsMet: const [],
