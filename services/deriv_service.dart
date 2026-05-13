@@ -5,7 +5,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/candle.dart' as model;
 
 /// ================= CONFIG =================
-const String derivToken = "pat_2279cde23728609b9699950a7be20574c5507025129f4babeded27163b11c55b";
+const String derivToken = "pat_0fccfffc5d1eaace805fb961cd606399a8665f15e6e40da9cdd313a67ac8ec08";
 const int derivAppId = 1089;
 
 class DerivService {
