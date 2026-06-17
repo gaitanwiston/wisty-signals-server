@@ -4,242 +4,221 @@ import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/candle.dart' as model;
 
-/// ================= CONFIG =================
-const String derivToken = "pat_0fccfffc5d1eaace805fb961cd606399a8665f15e6e40da9cdd313a67ac8ec08";
+const String derivToken =
+    "pat_0fccfffc5d1eaace805fb961cd606399a8665f15e6e40da9cdd313a67ac8ec08";
 const int derivAppId = 1089;
 
+enum TF { m1, h1, h4, d1, w1, mn }
+
 class DerivService {
-  // ================= SINGLETON =================
   static final DerivService instance = DerivService._internal();
-  factory DerivService() => instance;
   DerivService._internal();
 
   WebSocketChannel? _channel;
-  StreamSubscription? _wsSub;
+  StreamSubscription? _sub;
 
-  bool _authorized = false;
   bool _connected = false;
+  bool _auth = false;
 
-  final StreamController<Map<String, dynamic>> _controller =
-      StreamController.broadcast();
-
-  Stream<Map<String, dynamic>> get wsStream => _controller.stream;
-
-  final Map<String, List<model.Candle>> _candles = {};
+  final Map<String, Map<TF, List<model.Candle>>> _data = {};
   final Set<String> _subscribed = {};
 
-  bool get isConnected => _authorized && _connected;
+  /// 🔥 READY STATE (IMPORTANT FIX)
+  final Map<String, bool> _ready = {};
 
-  /// ================= CONNECT =================
+  final StreamController<Map<String, dynamic>> _stream =
+      StreamController.broadcast();
+
+  Stream<Map<String, dynamic>> get wsStream => _stream.stream;
+  bool get isConnected => _connected && _auth;
+
+  // ================= CONNECT =================
   Future<void> connect([String? token]) async {
     if (_connected) return;
 
-    final uri = Uri.parse(
-        "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
+    final uri =
+        Uri.parse("wss://ws.derivws.com/websockets/v3?app_id=$derivAppId");
 
-    print("🔌 Connecting to Deriv...");
-
+    print("🔌 Connecting Deriv...");
     _channel = WebSocketChannel.connect(uri);
     _connected = true;
 
-    _wsSub = _channel!.stream.listen(
+    _sub = _channel!.stream.listen(
       (msg) {
-        try {
-          final data = jsonDecode(msg);
-
-          if (data is Map<String, dynamic>) {
-            _handleMessage(data);
-            _controller.add(data);
-          }
-        } catch (e) {
-          print("⚠ WS parse error: $e");
+        final data = jsonDecode(msg);
+        if (data is Map<String, dynamic>) {
+          _handle(data);
+          _stream.add(data);
         }
       },
-      onError: (err) {
-        print("⚠ WS error: $err");
-        _reconnect();
-      },
-      onDone: () {
-        print("⚠ WS closed");
-        _reconnect();
-      },
+      onDone: _reconnect,
+      onError: (_) => _reconnect(),
     );
 
     _send({"authorize": token ?? derivToken});
-    print("📨 Authorization sent");
   }
 
-  /// ================= HANDLE WS =================
-  void _handleMessage(Map<String, dynamic> data) {
-    final type = data['msg_type'];
-    print("📩 WS message: $type");
+  // ================= HANDLE =================
+  void _handle(Map<String, dynamic> data) {
+    final type = data["msg_type"];
 
-    switch (type) {
-      case 'authorize':
-        _authorized = true;
-        print("✅ Authorized");
-        break;
+    if (type == "authorize") {
+      _auth = true;
+      print("✅ Authorized");
+    }
 
-      /// 🔥 REAL CANDLES
-      case 'candles':
-        final echo = data['echo_req'] ?? {};
-        final symbol = echo['ticks_history'];
+    final candles = data["candles"];
+    if (candles is List) {
+      final echo = data["echo_req"] ?? {};
+      final symbol = echo["ticks_history"] ?? "";
+      final gran = echo["granularity"] ?? 60;
 
-        final candles = data['candles'] ?? [];
-        final list = <model.Candle>[];
+      if (symbol.isEmpty) return;
 
-        for (final c in candles) {
-          list.add(model.Candle(
-            epoch: int.tryParse(c['epoch'].toString()) ?? 0,
-            open: double.tryParse(c['open'].toString()) ?? 0,
-            close: double.tryParse(c['close'].toString()) ?? 0,
-            high: double.tryParse(c['high'].toString()) ?? 0,
-            low: double.tryParse(c['low'].toString()) ?? 0,
-            volume: double.tryParse(c['volume'].toString()) ?? 0,
-          ));
-        }
+      final tf = _mapTF(gran);
 
-        _candles[symbol] = list;
+      final parsed = candles.map<model.Candle>((c) {
+        return model.Candle(
+          epoch: c["epoch"],
+          open: (c["open"] ?? 0).toDouble(),
+          close: (c["close"] ?? 0).toDouble(),
+          high: (c["high"] ?? 0).toDouble(),
+          low: (c["low"] ?? 0).toDouble(),
+          volume: (c["volume"] ?? 0).toDouble(),
+        );
+      }).toList();
 
-        print("✅ REAL candles loaded: ${list.length} for $symbol");
-        break;
+      _set(symbol, tf, parsed);
 
-      /// 🔥 LIVE TICK UPDATE
-      case 'tick':
-        final tick = data['tick'];
-        if (tick != null) {
-          final symbol = tick['symbol'];
-          final price =
-              double.tryParse(tick['quote'].toString()) ?? 0.0;
-          final epoch =
-              int.tryParse(tick['epoch'].toString()) ?? 0;
-
-          _updateCandles(symbol, price, epoch);
-        }
-        break;
-
-      case 'balance':
-        print("💰 Balance: ${data['balance']}");
-        break;
+      print("📊 Loaded [$tf] ${parsed.length} candles for $symbol");
     }
   }
 
-  /// ================= SUBSCRIBE =================
-  Future<void> subscribeTicks(String symbol) async {
+  // ================= INIT =================
+  void _init(String symbol) {
+    _data.putIfAbsent(symbol, () => {
+          TF.m1: [],
+          TF.h1: [],
+          TF.h4: [],
+          TF.d1: [],
+          TF.w1: [],
+          TF.mn: [],
+        });
+  }
+
+  void _set(String symbol, TF tf, List<model.Candle> c) {
+    _init(symbol);
+    _data[symbol]![tf] = List.from(c);
+
+    _buildAll(symbol);
+  }
+
+  // ================= BUILD (FIXED LOGIC) =================
+  void _buildAll(String symbol) {
+    final m1 = _data[symbol]![TF.m1] ?? [];
+
+    /// 🔥 REQUIRE MINIMUM DATA BEFORE BUILDING
+    if (m1.length < 200) {
+      _ready[symbol] = false;
+      return;
+    }
+
+    _data[symbol]![TF.h1] = _aggregate(m1, 60);
+    _data[symbol]![TF.h4] = _aggregate(m1, 240);
+    _data[symbol]![TF.d1] = _aggregate(m1, 1440);
+    _data[symbol]![TF.w1] = _aggregate(m1, 10080);
+
+    _ready[symbol] = true;
+  }
+
+  // ================= SMART AGGREGATION =================
+  List<model.Candle> _aggregate(List<model.Candle> base, int sec) {
+    final out = <model.Candle>[];
+
+    for (final c in base) {
+      final bucket = (c.epoch ~/ sec) * sec;
+
+      if (out.isEmpty || out.last.epoch != bucket) {
+        out.add(c);
+      } else {
+        final last = out.last;
+
+        out[out.length - 1] = model.Candle(
+          epoch: last.epoch,
+          open: last.open,
+          close: c.close,
+          high: max(last.high, c.high),
+          low: min(last.low, c.low),
+          volume: last.volume + c.volume,
+        );
+      }
+    }
+
+    return out;
+  }
+
+  // ================= SUBSCRIBE =================
+  Future<void> subscribeCandles(String symbol) async {
     if (!_connected) await connect();
-
     if (_subscribed.contains(symbol)) return;
-    _subscribed.add(symbol);
 
-    /// 🔥 GET REAL HISTORY (IMPORTANT)
-    await _sendAndWait("candles", {
+    _subscribed.add(symbol);
+    _init(symbol);
+
+    _send({
       "ticks_history": symbol,
       "style": "candles",
       "granularity": 60,
-      "count": 5000,
       "end": "latest",
+      "count": 5000000
     });
 
-    /// 🔥 LIVE STREAM
     _send({
       "ticks": symbol,
       "subscribe": 1,
     });
 
-    print("📡 Subscribed: $symbol");
+    print("📡 Subscribed (stream + history): $symbol");
   }
 
-  /// ================= UPDATE LIVE =================
-  void _updateCandles(String symbol, double price, int epoch) {
-    final list = _candles.putIfAbsent(symbol, () => []);
-
-    final bucket = (epoch ~/ 60) * 60;
-
-    if (list.isEmpty || list.last.epoch != bucket) {
-      final open = list.isNotEmpty ? list.last.close : price;
-
-      list.add(model.Candle(
-        epoch: bucket,
-        open: open,
-        close: price,
-        high: max(open, price),
-        low: min(open, price),
-        volume: 1,
-      ));
-    } else {
-      final last = list.last;
-
-      list[list.length - 1] = model.Candle(
-        epoch: last.epoch,
-        open: last.open,
-        close: price,
-        high: max(last.high, price),
-        low: min(last.low, price),
-        volume: last.volume + 1,
-      );
-    }
-
-    /// LIMIT SIZE
-    if (list.length > 10000) {
-      list.removeRange(0, list.length - 10000);
-    }
+  // ================= GET =================
+  List<model.Candle> getCandles(String symbol, TF tf) {
+    return _data[symbol]?[tf] ?? [];
   }
 
-  /// ================= GET CANDLES =================
-  Future<List<model.Candle>> getCandles(String pair,
-      {int timeframe = 1}) async {
-    return _candles[pair] ?? [];
+  bool isReady(String symbol) => _ready[symbol] ?? false;
+
+  // ================= SEND =================
+  void _send(Map<String, dynamic> d) {
+    _channel?.sink.add(jsonEncode(d));
   }
 
-  /// ================= SEND =================
-  void _send(Map<String, dynamic> data) {
-    _channel?.sink.add(jsonEncode(data));
-  }
-
-  /// ================= SEND & WAIT =================
-  Future<Map<String, dynamic>> _sendAndWait(
-      String type, Map<String, dynamic> data,
-      {int timeout = 10}) async {
-    final completer = Completer<Map<String, dynamic>>();
-    late StreamSubscription sub;
-
-    sub = _controller.stream.listen((event) {
-      if (event['msg_type'] == type && !completer.isCompleted) {
-        completer.complete(event);
-        sub.cancel();
-      }
-    });
-
-    _send(data);
-
-    Future.delayed(Duration(seconds: timeout), () {
-      if (!completer.isCompleted) {
-        completer.complete({});
-        sub.cancel();
-      }
-    });
-
-    return completer.future;
-  }
-
-  /// ================= COMPATIBILITY =================
-  Future<void> subscribeCandles(String pair) async {
-    await subscribeTicks(pair);
-  }
-
-  List<model.Candle> getCachedCandles(String pair) {
-    return _candles[pair] ?? [];
-  }
-
-  /// ================= RECONNECT =================
+  // ================= RECONNECT =================
   Future<void> _reconnect() async {
     _connected = false;
-    _authorized = false;
+    _auth = false;
 
-    await _channel?.sink.close();
     await Future.delayed(const Duration(seconds: 2));
-
-    print("🔁 Reconnecting...");
     await connect();
+  }
+
+  // ================= MAP TF =================
+  TF _mapTF(int g) {
+    switch (g) {
+      case 60:
+        return TF.m1;
+      case 3600:
+        return TF.h1;
+      case 14400:
+        return TF.h4;
+      case 86400:
+        return TF.d1;
+      case 604800:
+        return TF.w1;
+      case 2592000:
+        return TF.mn;
+      default:
+        return TF.m1;
+    }
   }
 }

@@ -1,11 +1,11 @@
 class SignalPoint {
-  final String type; // buy/sell/structure
   final double price;
-  final DateTime time;
+  final int time;
+  final String type;
 
   SignalPoint({
-    required this.type,
     required this.price,
     required this.time,
+    required this.type,
   });
 }

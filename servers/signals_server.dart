@@ -6,16 +6,12 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:web_socket_channel/io.dart';
 
 import '../services/market_analysis_service.dart';
-import '../models/models.dart';
+import '../models/market_analysis_result.dart';
 
-/// ================= GLOBALS =================
+/// ================= GLOBAL STATE =================
 final Map<String, List<WebSocketChannel>> _clients = {};
 final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
-
-bool showOnlySignals = true;
-
-/// cooldown per pair
 final Map<String, DateTime> _lastSent = {};
 
 const int cooldownSeconds = 15;
@@ -32,19 +28,19 @@ final List<String> allPairs28 = [
 ];
 
 /// ================= MAIN =================
-void main() async {
+Future<void> main() async {
   final server = await HttpServer.bind(InternetAddress.anyIPv4, 8080);
-  print('📡 SIGNAL SERVER ws://0.0.0.0:8080/signals');
+  print('📡 WISTY SIGNAL SERVER ws://0.0.0.0:8080/signals');
 
   final service = MarketAnalysisService.instance;
   await service.startPairs(allPairs28);
 
-  /// ================= ANALYSIS STREAM =================
+  /// STREAM ENGINE
   service.analysisStream.listen((result) {
-    // ❌ FILTER: ignore weak signals
     if (!result.canBuy && !result.canSell) return;
 
     final last = _lastSent[result.symbol];
+
     if (last != null &&
         DateTime.now().difference(last).inSeconds < cooldownSeconds) {
       return;
@@ -58,34 +54,41 @@ void main() async {
     _broadcastSignal(result);
   });
 
+  /// SOCKET SERVER
   await for (HttpRequest request in server) {
-    if (request.uri.path == '/signals') {
-      if (!WebSocketTransformer.isUpgradeRequest(request)) {
-        request.response
-          ..statusCode = HttpStatus.badRequest
-          ..write('WebSocket only')
-          ..close();
-        continue;
-      }
-
-      final socket = await WebSocketTransformer.upgrade(request);
-      final channel = IOWebSocketChannel(socket);
-      _handleSocket(channel);
-    } else {
-      request.response..statusCode = 404..close();
+    if (request.uri.path != '/signals') {
+      request.response
+        ..statusCode = HttpStatus.notFound
+        ..close();
+      continue;
     }
+
+    if (!WebSocketTransformer.isUpgradeRequest(request)) {
+      request.response
+        ..statusCode = HttpStatus.badRequest
+        ..write('WebSocket only')
+        ..close();
+      continue;
+    }
+
+    final socket = await WebSocketTransformer.upgrade(request);
+    final channel = IOWebSocketChannel(socket);
+
+    _handleSocket(channel);
   }
 }
 
-/// ================= SOCKET =================
+/// ================= SOCKET HANDLER =================
 void _handleSocket(WebSocketChannel socket) {
   print('✅ Client connected');
 
-  _sendAll(socket);
+  _sendSnapshot(socket);
 
-  _subscriptions[socket] = MarketAnalysisService.instance.analysisStream.listen(
-    (_) => _sendAll(socket),
-  );
+  _subscriptions[socket]?.cancel();
+  _subscriptions[socket] =
+      MarketAnalysisService.instance.analysisStream.listen((_) {
+    _sendSnapshot(socket);
+  });
 
   _heartbeats[socket]?.cancel();
   _heartbeats[socket] = Timer.periodic(
@@ -97,89 +100,156 @@ void _handleSocket(WebSocketChannel socket) {
     (msg) => _handleClient(socket, msg),
     onDone: () => _cleanup(socket),
     onError: (_) => _cleanup(socket),
+    cancelOnError: true,
   );
 }
 
-/// ================= CLIENT =================
+/// ================= CLIENT EVENTS =================
 void _handleClient(WebSocketChannel socket, dynamic msg) {
   try {
-    final data = jsonDecode(msg);
+    final data = jsonDecode(msg as String);
 
+    if (data is! Map) return;
+
+    /// SUBSCRIBE
     if (data['subscribe'] != null) {
       final pair = data['subscribe'].toString();
+
+      if (!allPairs28.contains(pair)) return;
+
       _clients.putIfAbsent(pair, () => []);
       if (!_clients[pair]!.contains(socket)) {
         _clients[pair]!.add(socket);
       }
     }
 
+    /// UNSUBSCRIBE
     if (data['unsubscribe'] != null) {
       final pair = data['unsubscribe'].toString();
       _clients[pair]?.remove(socket);
     }
 
+    /// TRADE FEEDBACK (IGNORED SAFELY)
     if (data['tradeResult'] != null) {
-      final t = data['tradeResult'];
-
-      MarketAnalysisService.instance.registerTradeResult(
-        pair: t['pair'],
-        direction: t['direction'],
-        win: t['win'],
-      );
+      // intentionally disabled (not implemented in service)
     }
   } catch (_) {}
 }
 
-/// ================= BROADCAST ONLY STRONG SIGNALS =================
+/// ================= SIGNAL BROADCAST =================
 void _broadcastSignal(MarketAnalysisResult result) {
   final sockets = _clients[result.symbol];
-  if (sockets == null || sockets.isEmpty) return;
+
+  if (sockets == null || sockets.isEmpty) {
+    return;
+  }
+
+  final confidence =
+      (result.indicators["confidence"] ?? 0).toDouble();
+
+  final buyScore =
+      (result.indicators["buy"] ?? 0).toDouble();
+
+  final sellScore =
+      (result.indicators["sell"] ?? 0).toDouble();
 
   final payload = {
+    "version": "3.0",
+    "type": "signal",
+
     "symbol": result.symbol,
-    "status": result.canBuy
+
+    "direction": result.canBuy
         ? "BUY"
         : result.canSell
             ? "SELL"
             : "WAIT",
-    "confidence": 100,
-    "entryPrice": result.candles.isNotEmpty
-        ? result.candles.last.close
-        : 0.0,
-    "stopLoss": result.stopLoss,
-    "takeProfit": result.takeProfit,
-    "timestamp": DateTime.now().toIso8601String(),
+
+    "confidence": confidence,
+
+    "buyScore": buyScore,
+    "sellScore": sellScore,
+
+    "trendAligned":
+        result.indicators["trendAligned"] ?? false,
+
+    "entry": result.risk.entry,
+    "stopLoss": result.risk.stopLoss,
+    "takeProfit": result.risk.takeProfit,
+
+    "risk": {
+      "entry": result.risk.entry,
+      "sl": result.risk.stopLoss,
+      "tp": result.risk.takeProfit,
+      "lot": result.risk.lotSize,
+      "direction": result.risk.direction,
+    },
+
+    "analysis": {
+      "structureBuy": result.structureBuy,
+      "structureSell": result.structureSell,
+      "confirmationValid": result.confirmationValid,
+      "filtersValid": result.filtersValid,
+      "biasIsBuy": result.biasIsBuy,
+    },
+
+    "timestamp":
+        DateTime.now().toUtc().toIso8601String(),
   };
 
-  for (final s in List<WebSocketChannel>.from(sockets)) {
-    _safeSend(s, payload);
+  for (final socket
+      in List<WebSocketChannel>.from(sockets)) {
+    _safeSend(socket, payload);
   }
 }
-
-/// ================= SEND ALL =================
-void _sendAll(WebSocketChannel socket) {
+/// ================= SNAPSHOT =================
+void _sendSnapshot(WebSocketChannel socket) {
   final service = MarketAnalysisService.instance;
-  final map = <String, dynamic>{};
+
+  final snapshot = <String, dynamic>{};
 
   for (final pair in allPairs28) {
     final r = service.latestFor(pair);
 
-    // ❌ IMPORTANT: DO NOT SEND WAIT SPAM
-    if (r == null || (!r.canBuy && !r.canSell)) continue;
+    if (r == null) continue;
 
-    map[pair] = {
+    snapshot[pair] = {
       "symbol": r.symbol,
-      "status": r.canBuy ? "BUY" : "SELL",
-      "confidence": 100,
-      "entryPrice": r.candles.isNotEmpty ? r.candles.last.close : 0.0,
-      "stopLoss": r.stopLoss,
-      "takeProfit": r.takeProfit,
+
+      "direction": r.canBuy
+          ? "BUY"
+          : r.canSell
+              ? "SELL"
+              : "WAIT",
+
+      "confidence":
+          r.indicators["confidence"] ?? 0,
+
+      "buyScore":
+          r.indicators["buy"] ?? 0,
+
+      "sellScore":
+          r.indicators["sell"] ?? 0,
+
+      "entry":
+          r.risk.entry,
+
+      "stopLoss":
+          r.risk.stopLoss,
+
+      "takeProfit":
+          r.risk.takeProfit,
+
+      "timestamp":
+          DateTime.now().toUtc().toIso8601String(),
     };
   }
 
-  _safeSend(socket, map);
+  _safeSend(socket, {
+    "type": "snapshot",
+    "pairs": snapshot,
+  });
 }
-
 /// ================= SAFE SEND =================
 void _safeSend(WebSocketChannel socket, Map<String, dynamic> data) {
   try {
@@ -201,6 +271,9 @@ void _cleanup(WebSocketChannel socket) {
     e.value.remove(socket);
   }
 
-  socket.sink.close();
+  try {
+    socket.sink.close();
+  } catch (_) {}
+
   print("❌ Client disconnected");
 }
