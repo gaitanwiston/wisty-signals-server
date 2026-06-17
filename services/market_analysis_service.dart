@@ -290,13 +290,13 @@ MarketAnalysisResult _analyze(
   bool isBuy =
       trendAligned &&
       buy > sell &&
-      buy >= 85 &&
+      buy >= 60 &&
       confidence >= 60;
 
   bool isSell =
       trendAligned &&
       sell > buy &&
-      sell >= 85 &&
+      sell >= 60 &&
       confidence >= 60;
 
   _log("════════ FINAL DECISION ════════");
