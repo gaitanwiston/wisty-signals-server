@@ -130,9 +130,7 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
     }
 
     /// TRADE FEEDBACK (IGNORED SAFELY)
-    if (data['tradeResult'] != null) {
-      // intentionally disabled (not implemented in service)
-    }
+    if (data['tradeResult'] != null) {}
   } catch (_) {}
 }
 
@@ -140,9 +138,7 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
 void _broadcastSignal(MarketAnalysisResult result) {
   final sockets = _clients[result.symbol];
 
-  if (sockets == null || sockets.isEmpty) {
-    return;
-  }
+  if (sockets == null || sockets.isEmpty) return;
 
   final confidence =
       (result.indicators["confidence"] ?? 0).toDouble();
@@ -153,8 +149,24 @@ void _broadcastSignal(MarketAnalysisResult result) {
   final sellScore =
       (result.indicators["sell"] ?? 0).toDouble();
 
+  /// ================= UI ENGINE (NEW) =================
+  final tradeEnabled = confidence >= 75;
+  final autoExecute = confidence >= 80;
+
+  final strengthLevel = confidence >= 80
+      ? "STRONG"
+      : confidence >= 75
+          ? "MODERATE"
+          : "WEAK";
+
+  final priority = confidence >= 80
+      ? "HIGH"
+      : confidence >= 75
+          ? "MEDIUM"
+          : "LOW";
+
   final payload = {
-    "version": "3.0",
+    "version": "3.1",
     "type": "signal",
 
     "symbol": result.symbol,
@@ -166,7 +178,6 @@ void _broadcastSignal(MarketAnalysisResult result) {
             : "WAIT",
 
     "confidence": confidence,
-
     "buyScore": buyScore,
     "sellScore": sellScore,
 
@@ -193,15 +204,25 @@ void _broadcastSignal(MarketAnalysisResult result) {
       "biasIsBuy": result.biasIsBuy,
     },
 
+    /// ================= UI CONTRACT =================
+    "ui": {
+      "tradeEnabled": tradeEnabled,
+      "autoExecute": autoExecute,
+      "strengthLevel": strengthLevel,
+      "priority": priority,
+      "glow": tradeEnabled,
+      "buttonState": tradeEnabled ? "ACTIVE" : "FROZEN"
+    },
+
     "timestamp":
         DateTime.now().toUtc().toIso8601String(),
   };
 
-  for (final socket
-      in List<WebSocketChannel>.from(sockets)) {
+  for (final socket in List<WebSocketChannel>.from(sockets)) {
     _safeSend(socket, payload);
   }
 }
+
 /// ================= SNAPSHOT =================
 void _sendSnapshot(WebSocketChannel socket) {
   final service = MarketAnalysisService.instance;
@@ -215,33 +236,18 @@ void _sendSnapshot(WebSocketChannel socket) {
 
     snapshot[pair] = {
       "symbol": r.symbol,
-
       "direction": r.canBuy
           ? "BUY"
           : r.canSell
               ? "SELL"
               : "WAIT",
-
-      "confidence":
-          r.indicators["confidence"] ?? 0,
-
-      "buyScore":
-          r.indicators["buy"] ?? 0,
-
-      "sellScore":
-          r.indicators["sell"] ?? 0,
-
-      "entry":
-          r.risk.entry,
-
-      "stopLoss":
-          r.risk.stopLoss,
-
-      "takeProfit":
-          r.risk.takeProfit,
-
-      "timestamp":
-          DateTime.now().toUtc().toIso8601String(),
+      "confidence": r.indicators["confidence"] ?? 0,
+      "buyScore": r.indicators["buy"] ?? 0,
+      "sellScore": r.indicators["sell"] ?? 0,
+      "entry": r.risk.entry,
+      "stopLoss": r.risk.stopLoss,
+      "takeProfit": r.risk.takeProfit,
+      "timestamp": DateTime.now().toUtc().toIso8601String(),
     };
   }
 
@@ -250,6 +256,7 @@ void _sendSnapshot(WebSocketChannel socket) {
     "pairs": snapshot,
   });
 }
+
 /// ================= SAFE SEND =================
 void _safeSend(WebSocketChannel socket, Map<String, dynamic> data) {
   try {
