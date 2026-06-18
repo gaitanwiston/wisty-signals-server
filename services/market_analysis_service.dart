@@ -287,17 +287,23 @@ MarketAnalysisResult _analyze(
 
   _log("FINAL INTERPRETATION: $finalReason");
 
-  bool isBuy =
-      trendAligned &&
-      buy > sell &&
-      buy >= 60 &&
-      confidence >= 60;
+// ================= FINAL DECISION =================
 
-  bool isSell =
-      trendAligned &&
-      sell > buy &&
-      sell >= 60 &&
-      confidence >= 60;
+// BUY SIGNAL
+bool isBuy =
+    buy > sell &&
+    confidence >= 70;
+
+// SELL SIGNAL
+bool isSell =
+    sell > buy &&
+    confidence >= 70;
+
+// Safety
+if (isBuy && isSell) {
+  isBuy = false;
+  isSell = false;
+}
 
   _log("════════ FINAL DECISION ════════");
   _log("BUY: $isBuy | SELL: $isSell");
@@ -315,7 +321,7 @@ MarketAnalysisResult _analyze(
     emaValid: true,
     rsiValid: true,
     confirmationValid: isBuy || isSell,
-    filtersValid: confidence > 70,
+    filtersValid: confidence >= 70,
     ema50: const [],
     ema200: const [],
     indicators: {
