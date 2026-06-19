@@ -14,7 +14,7 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 final Map<String, DateTime> _lastSent = {};
 
-const int cooldownSeconds = 15;
+const int cooldownSeconds = 5;
 
 /// ================= PAIRS =================
 final List<String> allPairs28 = [
@@ -37,8 +37,7 @@ Future<void> main() async {
 
   /// STREAM ENGINE
   service.analysisStream.listen((result) {
-    if (!result.canBuy && !result.canSell) return;
-
+    
     final last = _lastSent[result.symbol];
 
     if (last != null &&

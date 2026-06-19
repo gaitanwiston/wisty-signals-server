@@ -60,8 +60,9 @@ class MarketAnalysisService {
 
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
-  final Map<String, int> _lastSize = {};
+  final Map<String, int> _lastSize = {}; // ✅ FIXED HERE
   final Map<String, MarketAnalysisResult> _latest = {};
+  final Map<String, bool> _isAnalyzing = {}; // 🚀 prevent stacking
 
   bool debugMode = true;
 
@@ -69,7 +70,7 @@ class MarketAnalysisService {
     if (debugMode) print("[PROMAX ULTRA NEXT] $msg");
   }
 
-  // ================= START (🔥 MISSING FIX) =================
+  // ================= START =================
   Future<void> startPairs(List<String> pairs) async {
     final deriv = DerivService.instance;
     await deriv.connect();
@@ -77,18 +78,29 @@ class MarketAnalysisService {
     for (final p in pairs) {
       await deriv.subscribeCandles(p);
       _lastSize[p] = 0;
+      _isAnalyzing[p] = false;
     }
 
     Timer.periodic(const Duration(seconds: 5), (_) async {
       for (final p in pairs) {
+        if (_isAnalyzing[p] == true) continue; // 🚫 prevent overlap
+        _isAnalyzing[p] = true;
+
         try {
           final h1 = deriv.getCandles(p, TF.h1);
           final h4 = deriv.getCandles(p, TF.h4);
           final d1 = deriv.getCandles(p, TF.d1);
           final w1 = deriv.getCandles(p, TF.w1);
 
-          if (h1.length < 120) continue;
-          if (_lastSize[p] == h1.length) continue;
+          if (h1.length < 120) {
+            _isAnalyzing[p] = false;
+            continue;
+          }
+
+          if (_lastSize[p] == h1.length) {
+            _isAnalyzing[p] = false;
+            continue;
+          }
 
           _lastSize[p] = h1.length;
 
@@ -101,99 +113,73 @@ class MarketAnalysisService {
         } catch (e) {
           _log("ERROR $p -> $e");
         }
+
+        _isAnalyzing[p] = false;
       }
     });
   }
-// ================= ANALYSIS =================
-MarketAnalysisResult _analyze(
+
+  // ================= ANALYSIS =================
+  MarketAnalysisResult _analyze(
   String pair,
   List<Candle> w1,
   List<Candle> d1,
   List<Candle> h4,
   List<Candle> h1,
 ) {
-  _log("════════ TOP DOWN PRICE ACTION ANALYSIS (DEEP MODE) ════════");
+  _log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  _log("📊 PROMAX ULTRA NEXT ANALYSIS START");
   _log("PAIR: $pair");
+  _log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
-  // ================= W1 =================
-  _log("\n🔵 [STEP 1 - W1 MACRO STRUCTURE]");
+  // ================= STEP 1: W1 =================
+  _log("🔵 STEP 1: WEEKLY STRUCTURE (W1)");
+
   final w1Bias = _bias(w1);
   final w1Struct = _detectStructure(w1);
 
-  _log("W1 candles: ${w1.length}");
-  _log("W1 Bias detected: $w1Bias");
+  _log("Bias: $w1Bias");
+  _log("BOS Up: ${w1Struct.bosUp} | BOS Down: ${w1Struct.bosDown}");
+  _log("CHOCH Up: ${w1Struct.chochUp} | CHOCH Down: ${w1Struct.chochDown}");
 
-  _log("Structure breakdown:");
-  _log("  - BOS UP count > BOS DOWN ? ${w1Struct.bosUp}");
-  _log("  - BOS DOWN dominance ? ${w1Struct.bosDown}");
-  _log("  - CHOCH UP presence ? ${w1Struct.chochUp}");
-  _log("  - CHOCH DOWN presence ? ${w1Struct.chochDown}");
-
-  String w1Reason = w1Bias == MarketBias.buy
-      ? "Weekly shows bullish pressure (buyers dominating momentum)"
+  _log("Interpretation: ${w1Bias == MarketBias.buy
+      ? "Bullish weekly momentum"
       : w1Bias == MarketBias.sell
-          ? "Weekly shows bearish pressure (sellers dominating momentum)"
-          : "Weekly market is indecisive / ranging";
+          ? "Bearish weekly momentum"
+          : "Ranging / indecision"}");
 
-  _log("W1 INTERPRETATION: $w1Reason");
+  // ================= STEP 2: D1 =================
+  _log("\n🟠 STEP 2: DAILY CONFIRMATION (D1)");
 
-  // ================= D1 =================
-  _log("\n🟠 [STEP 2 - D1 CONFIRMATION]");
   final d1Bias = _bias(d1);
   final d1Struct = _detectStructure(d1);
 
-  bool trendAligned = (w1Bias == d1Bias) && w1Bias != MarketBias.none;
+  bool trendAligned =
+      (w1Bias == d1Bias) && w1Bias != MarketBias.none;
 
-  _log("D1 candles: ${d1.length}");
-  _log("D1 Bias: $d1Bias");
-  _log("Trend alignment W1 vs D1: $trendAligned");
+  _log("Bias: $d1Bias");
+  _log("Trend Alignment W1 vs D1: $trendAligned");
 
-  String d1Reason = trendAligned
-      ? "Daily confirms weekly direction → institutional alignment present"
-      : "Daily contradicts weekly → market uncertainty / consolidation";
+  _log("Interpretation: ${trendAligned
+      ? "Institutional alignment confirmed"
+      : "Conflict detected → consolidation/uncertain market"}");
 
-  _log("D1 INTERPRETATION: $d1Reason");
+  // ================= STEP 3: H4 =================
+  _log("\n🟣 STEP 3: LIQUIDITY + ORDERBLOCK (H4)");
 
-  if (!trendAligned) {
-    _log("❌ FILTER TRIGGERED: NO HIGH PROBABILITY TRADE (TOP-DOWN FAILURE)");
-  }
-
-  // ================= H4 =================
-  _log("\n🟣 [STEP 3 - H4 LIQUIDITY + ORDERBLOCK]");
   final liquidity = _detectLiquidity(h4);
   final ob = _detectOrderBlock(h4);
 
-  _log("H4 candles: ${h4.length}");
+  _log("Sweep High: ${liquidity.sweepHigh}");
+  _log("Sweep Low: ${liquidity.sweepLow}");
+  _log("Equal Highs: ${liquidity.equalHighs}");
+  _log("Equal Lows: ${liquidity.equalLows}");
 
-  _log("Liquidity analysis:");
-  _log("  - Sweep High detected: ${liquidity.sweepHigh}");
-  _log("  - Sweep Low detected: ${liquidity.sweepLow}");
-  _log("  - Equal Highs: ${liquidity.equalHighs}");
-  _log("  - Equal Lows: ${liquidity.equalLows}");
+  _log("OrderBlock → Bullish: ${ob.validBullish} | Bearish: ${ob.validBearish}");
 
-  String liquidityReason = liquidity.sweepLow
-      ? "Buy-side liquidity taken → potential bullish continuation"
-      : liquidity.sweepHigh
-          ? "Sell-side liquidity taken → potential bearish continuation"
-          : "No liquidity sweep → market still balanced";
+  // ================= STEP 4: H1 =================
+  _log("\n🟡 STEP 4: ENTRY MOMENTUM (H1)");
 
-  _log("LIQUIDITY INTERPRETATION: $liquidityReason");
-
-  _log("OrderBlock analysis:");
-  _log("  - Bullish OB valid: ${ob.validBullish}");
-  _log("  - Bearish OB valid: ${ob.validBearish}");
-  _log("  - Strength: ${ob.strength}");
-
-  String obReason = ob.validBullish
-      ? "Bullish orderblock found → smart money accumulation zone"
-      : ob.validBearish
-          ? "Bearish orderblock found → smart money distribution zone"
-          : "No clear orderblock → weak institutional footprint";
-
-  _log("OB INTERPRETATION: $obReason");
-
-  // ================= H1 =================
-  _log("\n🟡 [STEP 4 - H1 ENTRY CONFIRMATION]");
   final last5 = h1.sublist(max(0, h1.length - 5));
 
   int bull = 0, bear = 0;
@@ -205,51 +191,42 @@ MarketAnalysisResult _analyze(
   bool h1Buy = bull >= 3;
   bool h1Sell = bear >= 3;
 
-  _log("H1 candles: ${h1.length}");
-  _log("Last 5 candles → Bull:$bull Bear:$bear");
-
-  String h1Reason = h1Buy
-      ? "Short-term momentum bullish → buyers active"
+  _log("Last 5 candles → Bull: $bull | Bear: $bear");
+  _log("Momentum: ${h1Buy
+      ? "Bullish pressure"
       : h1Sell
-          ? "Short-term momentum bearish → sellers active"
-          : "No clear momentum → market consolidation";
+          ? "Bearish pressure"
+          : "Neutral"}");
 
-  _log("H1 INTERPRETATION: $h1Reason");
+  // ================= STEP 5: CANDLE PSYCHOLOGY =================
+  _log("\n⚪ STEP 5: CANDLE PSYCHOLOGY");
 
-  // ================= CANDLE PSYCHOLOGY =================
-  _log("\n⚪ [STEP 4.5 - CANDLE PSYCHOLOGY]");
+  bool bullishCandle = false;
+  bool bearishCandle = false;
 
-  final last = h1.last;
-  final prev = h1[h1.length - 2];
+  if (h1.length > 2) {
+    final last = h1[h1.length - 1];
+    final prev = h1[h1.length - 2];
 
-  bool engulfBull =
-      last.close > last.open &&
-      prev.close < prev.open &&
-      last.close > prev.open;
+    bullishCandle =
+        last.close > last.open &&
+        prev.close < prev.open &&
+        last.close > prev.open;
 
-  bool engulfBear =
-      last.close < last.open &&
-      prev.close > prev.open &&
-      last.close < prev.open;
+    bearishCandle =
+        last.close < last.open &&
+        prev.close > prev.open &&
+        last.close < prev.open;
+  }
 
-  bool bullishCandle = engulfBull;
-  bool bearishCandle = engulfBear;
-
-  _log("Bullish engulfing: $bullishCandle");
-  _log("Bearish engulfing: $bearishCandle");
-
-  String candleReason = bullishCandle
-      ? "Strong bullish reversal candle → buyers aggressively entering"
-      : bearishCandle
-          ? "Strong bearish reversal candle → sellers aggressively entering"
-          : "No strong reversal pattern → weak entry signal";
-
-  _log("CANDLE INTERPRETATION: $candleReason");
+  _log("Bullish Engulfing: $bullishCandle");
+  _log("Bearish Engulfing: $bearishCandle");
 
   // ================= SCORE ENGINE =================
-  _log("\n🧠 [FINAL STEP - CONFLUENCE ENGINE]");
+  _log("\n🧠 STEP 6: CONFLUENCE ENGINE");
 
-  double buy = 0, sell = 0;
+  double buy = 0;
+  double sell = 0;
 
   if (trendAligned && w1Bias == MarketBias.buy) buy += 35;
   if (trendAligned && w1Bias == MarketBias.sell) sell += 35;
@@ -266,10 +243,8 @@ MarketAnalysisResult _analyze(
   if (h1Buy) buy += 20;
   if (h1Sell) sell += 20;
 
-  if (trendAligned) {
-    if (bullishCandle) buy += 10;
-    if (bearishCandle) sell += 10;
-  }
+  if (bullishCandle) buy += 10;
+  if (bearishCandle) sell += 10;
 
   double total = buy + sell;
   double confidence =
@@ -277,36 +252,44 @@ MarketAnalysisResult _analyze(
 
   _log("Buy Score: $buy");
   _log("Sell Score: $sell");
-  _log("Confidence: $confidence");
+  _log("Confidence: ${confidence.toStringAsFixed(2)}%");
 
-  String finalReason = buy > sell
-      ? "BUY favored due to confluence across W1-D1-H4-H1 alignment"
-      : sell > buy
-          ? "SELL favored due to bearish liquidity + structure alignment"
-          : "No edge detected → market neutral";
+// ================= FINAL DECISION (IMPROVED SMC FILTER) =================
 
-  _log("FINAL INTERPRETATION: $finalReason");
+bool strongTrend = trendAligned && w1Bias != MarketBias.none;
 
-// ================= FINAL DECISION =================
+// Direction confirmation rules
+bool buyStructure =
+    w1Bias == MarketBias.buy &&
+    (liquidity.sweepLow || ob.validBullish) &&
+    h1Buy;
 
-// BUY SIGNAL
+bool sellStructure =
+    w1Bias == MarketBias.sell &&
+    (liquidity.sweepHigh || ob.validBearish) &&
+    h1Sell;
+
+// Final strict filter
 bool isBuy =
-    buy > sell &&
-    confidence >= 70;
+    strongTrend &&
+    buyStructure &&
+    buy > sell + 15 &&
+    confidence >= 65;
 
-// SELL SIGNAL
 bool isSell =
-    sell > buy &&
-    confidence >= 70;
+    strongTrend &&
+    sellStructure &&
+    sell > buy + 15 &&
+    confidence >= 65;
 
-// Safety
+// safety lock
 if (isBuy && isSell) {
   isBuy = false;
   isSell = false;
 }
 
-  _log("════════ FINAL DECISION ════════");
   _log("BUY: $isBuy | SELL: $isSell");
+  _log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
   return MarketAnalysisResult(
     symbol: pair,
@@ -321,7 +304,7 @@ if (isBuy && isSell) {
     emaValid: true,
     rsiValid: true,
     confirmationValid: isBuy || isSell,
-    filtersValid: confidence >= 70,
+    filtersValid: confidence >= 60,
     ema50: const [],
     ema200: const [],
     indicators: {
@@ -329,9 +312,6 @@ if (isBuy && isSell) {
       "sell": sell,
       "confidence": confidence,
       "trendAligned": trendAligned,
-      "w1Bias": w1Bias.toString(),
-      "d1Bias": d1Bias.toString(),
-      "reason": finalReason,
     },
     entryCandles: const [],
     structurePoints: const [],
@@ -355,7 +335,6 @@ if (isBuy && isSell) {
     ),
   );
 }
-
   // ================= HELPERS =================
   MarketBias _bias(List<Candle> c) {
     int up = 0, down = 0;
