@@ -23,14 +23,16 @@ class DerivService {
   final Map<String, Map<TF, List<model.Candle>>> _data = {};
   final Set<String> _subscribed = {};
 
-  /// 🔥 READY STATE (IMPORTANT FIX)
   final Map<String, bool> _ready = {};
 
+  /// 🔥 EVENT STREAM (IMPORTANT UPGRADE)
   final StreamController<Map<String, dynamic>> _stream =
       StreamController.broadcast();
 
   Stream<Map<String, dynamic>> get wsStream => _stream.stream;
   bool get isConnected => _connected && _auth;
+
+  Timer? _keepAlive;
 
   // ================= CONNECT =================
   Future<void> connect([String? token]) async {
@@ -45,17 +47,41 @@ class DerivService {
 
     _sub = _channel!.stream.listen(
       (msg) {
-        final data = jsonDecode(msg);
-        if (data is Map<String, dynamic>) {
-          _handle(data);
-          _stream.add(data);
+        try {
+          final data = jsonDecode(msg);
+
+          if (data is Map<String, dynamic>) {
+            _handle(data);
+
+            /// 🔥 ALWAYS PUSH RAW EVENT
+            _stream.add(data);
+          }
+        } catch (e) {
+          print("❌ WS decode error: $e");
         }
       },
       onDone: _reconnect,
-      onError: (_) => _reconnect(),
+      onError: (e) {
+        print("❌ WS error: $e");
+        _reconnect();
+      },
+      cancelOnError: true,
     );
 
     _send({"authorize": token ?? derivToken});
+
+    _startKeepAlive();
+  }
+
+  // ================= KEEP ALIVE =================
+  void _startKeepAlive() {
+    _keepAlive?.cancel();
+
+    _keepAlive = Timer.periodic(const Duration(seconds: 20), (_) {
+      if (_connected) {
+        _send({"ping": 1});
+      }
+    });
   }
 
   // ================= HANDLE =================
@@ -90,7 +116,15 @@ class DerivService {
 
       _set(symbol, tf, parsed);
 
-      print("📊 Loaded [$tf] ${parsed.length} candles for $symbol");
+      /// 🔥 IMPORTANT EVENT: DATA UPDATED
+      _stream.add({
+        "type": "candles_update",
+        "symbol": symbol,
+        "tf": tf.name,
+        "length": parsed.length,
+      });
+
+      print("📊 [$symbol] [$tf] candles updated: ${parsed.length}");
     }
   }
 
@@ -113,11 +147,10 @@ class DerivService {
     _buildAll(symbol);
   }
 
-  // ================= BUILD (FIXED LOGIC) =================
+  // ================= BUILD =================
   void _buildAll(String symbol) {
     final m1 = _data[symbol]![TF.m1] ?? [];
 
-    /// 🔥 REQUIRE MINIMUM DATA BEFORE BUILDING
     if (m1.length < 200) {
       _ready[symbol] = false;
       return;
@@ -129,9 +162,15 @@ class DerivService {
     _data[symbol]![TF.w1] = _aggregate(m1, 10080);
 
     _ready[symbol] = true;
+
+    /// 🔥 SIGNAL TO ENGINE THAT DATA IS READY
+    _stream.add({
+      "type": "data_ready",
+      "symbol": symbol,
+    });
   }
 
-  // ================= SMART AGGREGATION =================
+  // ================= AGGREGATION =================
   List<model.Candle> _aggregate(List<model.Candle> base, int sec) {
     final out = <model.Candle>[];
 
@@ -170,7 +209,7 @@ class DerivService {
       "style": "candles",
       "granularity": 60,
       "end": "latest",
-      "count": 5000000
+      "count": 5000
     });
 
     _send({
@@ -178,7 +217,7 @@ class DerivService {
       "subscribe": 1,
     });
 
-    print("📡 Subscribed (stream + history): $symbol");
+    print("📡 Subscribed: $symbol");
   }
 
   // ================= GET =================
@@ -190,15 +229,22 @@ class DerivService {
 
   // ================= SEND =================
   void _send(Map<String, dynamic> d) {
-    _channel?.sink.add(jsonEncode(d));
+    try {
+      _channel?.sink.add(jsonEncode(d));
+    } catch (e) {
+      print("❌ send error: $e");
+    }
   }
 
   // ================= RECONNECT =================
   Future<void> _reconnect() async {
+    print("🔁 Reconnecting Deriv...");
+
     _connected = false;
     _auth = false;
 
     await Future.delayed(const Duration(seconds: 2));
+
     await connect();
   }
 

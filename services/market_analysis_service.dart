@@ -9,7 +9,6 @@ import 'deriv_service.dart';
 enum MarketBias { buy, sell, none }
 enum MarketSession { asia, london, newYork, sydney, unknown }
 
-// ================= STRUCTURE =================
 class Structure {
   final bool bosUp;
   final bool bosDown;
@@ -50,7 +49,6 @@ class OrderBlock {
   });
 }
 
-// ================= ENGINE =================
 class MarketAnalysisService {
   MarketAnalysisService._internal();
   static final instance = MarketAnalysisService._internal();
@@ -60,9 +58,8 @@ class MarketAnalysisService {
 
   Stream<MarketAnalysisResult> get analysisStream => _controller.stream;
 
-  final Map<String, int> _lastSize = {}; // ✅ FIXED HERE
   final Map<String, MarketAnalysisResult> _latest = {};
-  final Map<String, bool> _isAnalyzing = {}; // 🚀 prevent stacking
+  final Map<String, bool> _isAnalyzing = {};
 
   bool debugMode = true;
 
@@ -77,264 +74,197 @@ class MarketAnalysisService {
 
     for (final p in pairs) {
       await deriv.subscribeCandles(p);
-      _lastSize[p] = 0;
       _isAnalyzing[p] = false;
     }
 
-    Timer.periodic(const Duration(seconds: 5), (_) async {
-      for (final p in pairs) {
-        if (_isAnalyzing[p] == true) continue; // 🚫 prevent overlap
-        _isAnalyzing[p] = true;
+    deriv.wsStream.listen((event) {
+      final symbol = event["symbol"];
+      final type = event["type"];
 
-        try {
-          final h1 = deriv.getCandles(p, TF.h1);
-          final h4 = deriv.getCandles(p, TF.h4);
-          final d1 = deriv.getCandles(p, TF.d1);
-          final w1 = deriv.getCandles(p, TF.w1);
+      if (symbol == null) return;
 
-          if (h1.length < 120) {
-            _isAnalyzing[p] = false;
-            continue;
-          }
-
-          if (_lastSize[p] == h1.length) {
-            _isAnalyzing[p] = false;
-            continue;
-          }
-
-          _lastSize[p] = h1.length;
-
-          final result = _analyze(p, w1, d1, h4, h1);
-          _latest[p] = result;
-
-          if (result.canBuy || result.canSell) {
-            _controller.add(result);
-          }
-        } catch (e) {
-          _log("ERROR $p -> $e");
-        }
-
-        _isAnalyzing[p] = false;
+      if (type == "candles_update" || type == "ohlc") {
+        _runAnalysis(symbol);
       }
     });
+
+    _log("🚀 ENGINE STARTED WITH FULL DEBUG MODE");
+  }
+
+  // ================= RUN =================
+  Future<void> _runAnalysis(String p) async {
+    if (_isAnalyzing[p] == true) return;
+    _isAnalyzing[p] = true;
+
+    try {
+      final deriv = DerivService.instance;
+
+      final h1 = deriv.getCandles(p, TF.h1);
+      final h4 = deriv.getCandles(p, TF.h4);
+      final d1 = deriv.getCandles(p, TF.d1);
+      final w1 = deriv.getCandles(p, TF.w1);
+
+      _log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+      _log("📡 NEW ANALYSIS TRIGGERED: $p");
+      _log("DATA SIZE → H1:${h1.length} H4:${h4.length} D1:${d1.length} W1:${w1.length}");
+      _log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+      if (h1.length < 120) {
+        _log("⛔ SKIP: Not enough H1 candles");
+        _isAnalyzing[p] = false;
+        return;
+      }
+
+      final result = _analyze(p, w1, d1, h4, h1);
+      _latest[p] = result;
+
+      _controller.add(result);
+
+      _log("✅ RESULT → BUY:${result.canBuy} SELL:${result.canSell}");
+      _log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+
+    } catch (e) {
+      _log("❌ ERROR $p -> $e");
+    }
+
+    _isAnalyzing[p] = false;
   }
 
   // ================= ANALYSIS =================
   MarketAnalysisResult _analyze(
-  String pair,
-  List<Candle> w1,
-  List<Candle> d1,
-  List<Candle> h4,
-  List<Candle> h1,
-) {
-  _log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  _log("📊 PROMAX ULTRA NEXT ANALYSIS START");
-  _log("PAIR: $pair");
-  _log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+    String pair,
+    List<Candle> w1,
+    List<Candle> d1,
+    List<Candle> h4,
+    List<Candle> h1,
+  ) {
+    _log("🔵 STEP 1: WEEKLY STRUCTURE (W1)");
+    final w1Bias = _bias(w1);
+    final w1Struct = _detectStructure(w1);
 
-  // ================= STEP 1: W1 =================
-  _log("🔵 STEP 1: WEEKLY STRUCTURE (W1)");
+    _log("W1 Bias = $w1Bias");
+    _log("BOS UP:${w1Struct.bosUp} BOS DOWN:${w1Struct.bosDown}");
+    _log("CHOCH UP:${w1Struct.chochUp} CHOCH DOWN:${w1Struct.chochDown}");
 
-  final w1Bias = _bias(w1);
-  final w1Struct = _detectStructure(w1);
+    _log("\n🟠 STEP 2: DAILY STRUCTURE (D1)");
+    final d1Bias = _bias(d1);
+    final d1Struct = _detectStructure(d1);
 
-  _log("Bias: $w1Bias");
-  _log("BOS Up: ${w1Struct.bosUp} | BOS Down: ${w1Struct.bosDown}");
-  _log("CHOCH Up: ${w1Struct.chochUp} | CHOCH Down: ${w1Struct.chochDown}");
+    _log("D1 Bias = $d1Bias");
 
-  _log("Interpretation: ${w1Bias == MarketBias.buy
-      ? "Bullish weekly momentum"
-      : w1Bias == MarketBias.sell
-          ? "Bearish weekly momentum"
-          : "Ranging / indecision"}");
+    bool trendAligned =
+        (w1Bias == d1Bias) && w1Bias != MarketBias.none;
 
-  // ================= STEP 2: D1 =================
-  _log("\n🟠 STEP 2: DAILY CONFIRMATION (D1)");
+    _log("Trend Aligned = $trendAligned");
 
-  final d1Bias = _bias(d1);
-  final d1Struct = _detectStructure(d1);
+    _log("\n🟣 STEP 3: LIQUIDITY + ORDERBLOCK (H4)");
+    final liquidity = _detectLiquidity(h4);
+    final ob = _detectOrderBlock(h4);
 
-  bool trendAligned =
-      (w1Bias == d1Bias) && w1Bias != MarketBias.none;
+    _log("Sweep High:${liquidity.sweepHigh} Sweep Low:${liquidity.sweepLow}");
+    _log("Equal Highs:${liquidity.equalHighs} Equal Lows:${liquidity.equalLows}");
+    _log("OB Bull:${ob.validBullish} OB Bear:${ob.validBearish}");
 
-  _log("Bias: $d1Bias");
-  _log("Trend Alignment W1 vs D1: $trendAligned");
+    _log("\n🟡 STEP 4: ENTRY MOMENTUM (H1)");
+    final last5 = h1.sublist(max(0, h1.length - 5));
 
-  _log("Interpretation: ${trendAligned
-      ? "Institutional alignment confirmed"
-      : "Conflict detected → consolidation/uncertain market"}");
+    int bull = 0, bear = 0;
+    for (final c in last5) {
+      if (c.close > c.open) bull++;
+      if (c.close < c.open) bear++;
+    }
 
-  // ================= STEP 3: H4 =================
-  _log("\n🟣 STEP 3: LIQUIDITY + ORDERBLOCK (H4)");
+    bool h1Buy = bull >= 3;
+    bool h1Sell = bear >= 3;
 
-  final liquidity = _detectLiquidity(h4);
-  final ob = _detectOrderBlock(h4);
+    _log("Bull:${bull} Bear:${bear}");
+    _log("H1 BUY:$h1Buy H1 SELL:$h1Sell");
 
-  _log("Sweep High: ${liquidity.sweepHigh}");
-  _log("Sweep Low: ${liquidity.sweepLow}");
-  _log("Equal Highs: ${liquidity.equalHighs}");
-  _log("Equal Lows: ${liquidity.equalLows}");
+    _log("\n⚪ STEP 5: SCORE ENGINE");
 
-  _log("OrderBlock → Bullish: ${ob.validBullish} | Bearish: ${ob.validBearish}");
+    double buy = 0;
+    double sell = 0;
 
-  // ================= STEP 4: H1 =================
-  _log("\n🟡 STEP 4: ENTRY MOMENTUM (H1)");
+    if (trendAligned && w1Bias == MarketBias.buy) buy += 35;
+    if (trendAligned && w1Bias == MarketBias.sell) sell += 35;
 
-  final last5 = h1.sublist(max(0, h1.length - 5));
+    if (w1Struct.bosUp && d1Struct.bosUp) buy += 20;
+    if (w1Struct.bosDown && d1Struct.bosDown) sell += 20;
 
-  int bull = 0, bear = 0;
-  for (final c in last5) {
-    if (c.close > c.open) bull++;
-    if (c.close < c.open) bear++;
+    if (liquidity.sweepLow) buy += 25;
+    if (liquidity.sweepHigh) sell += 25;
+
+    if (ob.validBullish) buy += 20;
+    if (ob.validBearish) sell += 20;
+
+    if (h1Buy) buy += 20;
+    if (h1Sell) sell += 20;
+
+    double total = buy + sell;
+    double confidence = total == 0 ? 0 : (max(buy, sell) / total) * 100;
+
+    _log("BUY SCORE:$buy SELL SCORE:$sell");
+    _log("CONFIDENCE:${confidence.toStringAsFixed(2)}%");
+
+    bool isBuy =
+        trendAligned &&
+        w1Bias == MarketBias.buy &&
+        buy > sell + 15 &&
+        confidence >= 65;
+
+    bool isSell =
+        trendAligned &&
+        w1Bias == MarketBias.sell &&
+        sell > buy + 15 &&
+        confidence >= 65;
+
+    _log("FINAL → BUY:$isBuy SELL:$isSell");
+
+    return MarketAnalysisResult(
+      symbol: pair,
+      candles: h1,
+      candlesH1: h1,
+      candlesM15: h4,
+      candlesM30: d1,
+      candlesM5: const [],
+      canBuy: isBuy,
+      canSell: isSell,
+      structureValid: true,
+      emaValid: true,
+      rsiValid: true,
+      confirmationValid: isBuy || isSell,
+      filtersValid: confidence >= 60,
+      ema50: const [],
+      ema200: const [],
+      indicators: {
+        "buy": buy,
+        "sell": sell,
+        "confidence": confidence,
+        "trendAligned": trendAligned,
+      },
+      entryCandles: const [],
+      structurePoints: const [],
+      conditionsMet: const [],
+      reasonsFailed: const [],
+      stopLoss: _atr(h1),
+      takeProfit: _atr(h1) * 3,
+      structureBuy: isBuy,
+      structureSell: isSell,
+      biasIsBuy: isBuy,
+      risk: RiskModel(
+        entry: h1.last.close,
+        stopLoss: isBuy
+            ? h1.last.close - _atr(h1)
+            : h1.last.close + _atr(h1),
+        takeProfit: isBuy
+            ? h1.last.close + _atr(h1) * 3
+            : h1.last.close - _atr(h1) * 3,
+        lotSize: 0.1,
+        direction: isBuy ? "BUY" : isSell ? "SELL" : "NONE",
+      ),
+    );
   }
 
-  bool h1Buy = bull >= 3;
-  bool h1Sell = bear >= 3;
-
-  _log("Last 5 candles → Bull: $bull | Bear: $bear");
-  _log("Momentum: ${h1Buy
-      ? "Bullish pressure"
-      : h1Sell
-          ? "Bearish pressure"
-          : "Neutral"}");
-
-  // ================= STEP 5: CANDLE PSYCHOLOGY =================
-  _log("\n⚪ STEP 5: CANDLE PSYCHOLOGY");
-
-  bool bullishCandle = false;
-  bool bearishCandle = false;
-
-  if (h1.length > 2) {
-    final last = h1[h1.length - 1];
-    final prev = h1[h1.length - 2];
-
-    bullishCandle =
-        last.close > last.open &&
-        prev.close < prev.open &&
-        last.close > prev.open;
-
-    bearishCandle =
-        last.close < last.open &&
-        prev.close > prev.open &&
-        last.close < prev.open;
-  }
-
-  _log("Bullish Engulfing: $bullishCandle");
-  _log("Bearish Engulfing: $bearishCandle");
-
-  // ================= SCORE ENGINE =================
-  _log("\n🧠 STEP 6: CONFLUENCE ENGINE");
-
-  double buy = 0;
-  double sell = 0;
-
-  if (trendAligned && w1Bias == MarketBias.buy) buy += 35;
-  if (trendAligned && w1Bias == MarketBias.sell) sell += 35;
-
-  if (w1Struct.bosUp && d1Struct.bosUp) buy += 20;
-  if (w1Struct.bosDown && d1Struct.bosDown) sell += 20;
-
-  if (liquidity.sweepLow) buy += 25;
-  if (liquidity.sweepHigh) sell += 25;
-
-  if (ob.validBullish) buy += 20;
-  if (ob.validBearish) sell += 20;
-
-  if (h1Buy) buy += 20;
-  if (h1Sell) sell += 20;
-
-  if (bullishCandle) buy += 10;
-  if (bearishCandle) sell += 10;
-
-  double total = buy + sell;
-  double confidence =
-      total == 0 ? 0 : (max(buy, sell) / total) * 100;
-
-  _log("Buy Score: $buy");
-  _log("Sell Score: $sell");
-  _log("Confidence: ${confidence.toStringAsFixed(2)}%");
-
-// ================= FINAL DECISION (IMPROVED SMC FILTER) =================
-
-bool strongTrend = trendAligned && w1Bias != MarketBias.none;
-
-// Direction confirmation rules
-bool buyStructure =
-    w1Bias == MarketBias.buy &&
-    (liquidity.sweepLow || ob.validBullish) &&
-    h1Buy;
-
-bool sellStructure =
-    w1Bias == MarketBias.sell &&
-    (liquidity.sweepHigh || ob.validBearish) &&
-    h1Sell;
-
-// Final strict filter
-bool isBuy =
-    strongTrend &&
-    buyStructure &&
-    buy > sell + 15 &&
-    confidence >= 65;
-
-bool isSell =
-    strongTrend &&
-    sellStructure &&
-    sell > buy + 15 &&
-    confidence >= 65;
-
-// safety lock
-if (isBuy && isSell) {
-  isBuy = false;
-  isSell = false;
-}
-
-  _log("BUY: $isBuy | SELL: $isSell");
-  _log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-
-  return MarketAnalysisResult(
-    symbol: pair,
-    candles: h1,
-    candlesH1: h1,
-    candlesM15: h4,
-    candlesM30: d1,
-    candlesM5: const [],
-    canBuy: isBuy,
-    canSell: isSell,
-    structureValid: true,
-    emaValid: true,
-    rsiValid: true,
-    confirmationValid: isBuy || isSell,
-    filtersValid: confidence >= 60,
-    ema50: const [],
-    ema200: const [],
-    indicators: {
-      "buy": buy,
-      "sell": sell,
-      "confidence": confidence,
-      "trendAligned": trendAligned,
-    },
-    entryCandles: const [],
-    structurePoints: const [],
-    conditionsMet: const [],
-    reasonsFailed: const [],
-    stopLoss: _atr(h1),
-    takeProfit: _atr(h1) * 3,
-    structureBuy: isBuy,
-    structureSell: isSell,
-    biasIsBuy: isBuy,
-    risk: RiskModel(
-      entry: h1.last.close,
-      stopLoss: isBuy
-          ? h1.last.close - _atr(h1)
-          : h1.last.close + _atr(h1),
-      takeProfit: isBuy
-          ? h1.last.close + _atr(h1) * 3
-          : h1.last.close - _atr(h1) * 3,
-      lotSize: 0.1,
-      direction: isBuy ? "BUY" : isSell ? "SELL" : "NONE",
-    ),
-  );
-}
   // ================= HELPERS =================
   MarketBias _bias(List<Candle> c) {
     int up = 0, down = 0;
