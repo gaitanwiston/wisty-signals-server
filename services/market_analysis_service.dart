@@ -62,6 +62,7 @@ class MarketAnalysisService {
   final Map<String, bool> _isAnalyzing = {};
   final Map<String, DateTime> _lastRun = {};
   final Map<String, DateTime> _lastSignalTime = {};
+  Timer? _globalAnalysisTimer;
 
   final Duration signalCooldown = const Duration(seconds: 8);
 
@@ -352,7 +353,22 @@ class MarketAnalysisService {
       ),
     );
   }
+void startPeriodicAnalysis(List<String> pairs) {
+  _globalAnalysisTimer?.cancel();
 
+  _globalAnalysisTimer = Timer.periodic(
+    const Duration(minutes: 5),
+    (_) async {
+      print("⏱️ [PROMAX ULTRA NEXT] FORCED ANALYSIS CYCLE STARTED");
+
+      for (final p in pairs) {
+        await _runAnalysis(p);
+      }
+
+      print("✅ [PROMAX ULTRA NEXT] FORCED ANALYSIS CYCLE DONE");
+    },
+  );
+}
   // ================= HELPERS =================
   MarketBias _bias(List<Candle> c) {
     int up = 0, down = 0;

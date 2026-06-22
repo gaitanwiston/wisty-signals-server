@@ -34,6 +34,7 @@ Future<void> main() async {
 
   final service = MarketAnalysisService.instance;
   await service.startPairs(allPairs28);
+service.startPeriodicAnalysis(allPairs28);
 
   /// ================= SIGNAL STREAM ENGINE =================
   service.analysisStream.listen((result) {
