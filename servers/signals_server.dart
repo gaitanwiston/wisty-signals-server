@@ -14,7 +14,7 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 final Map<String, DateTime> _lastSent = {};
 
-const int cooldownSeconds = 5;
+const int cooldownSeconds = 3;
 
 /// ================= PAIRS =================
 final List<String> allPairs28 = [
@@ -33,31 +33,15 @@ Future<void> main() async {
   print('📡 WISTY SIGNAL SERVER ws://0.0.0.0:8080/signals');
 
   final service = MarketAnalysisService.instance;
+
   await service.startPairs(allPairs28);
-service.startPeriodicAnalysis(allPairs28);
-void startPeriodicAnalysis(List<String> pairs) {
-  print("🚀 PERIODIC ANALYSIS SCHEDULER STARTED");
+  service.startPeriodicAnalysis(allPairs28);
 
- }
-
-  /// ================= SIGNAL STREAM ENGINE =================
+  /// SINGLE STREAM (NO DUPLICATION)
   service.analysisStream.listen((result) {
-    final last = _lastSent[result.symbol];
-
-    if (last != null &&
-        DateTime.now().difference(last).inSeconds < cooldownSeconds) {
-      return;
-    }
-
-    _lastSent[result.symbol] = DateTime.now();
-
-    print("🔥 SIGNAL ${result.symbol} "
-        "${result.canBuy ? "BUY" : result.canSell ? "SELL" : "WAIT"}");
-
-    _broadcastSignal(result);
+    _handleEngineSignal(result);
   });
 
-  /// ================= HTTP → WEBSOCKET =================
   await for (HttpRequest request in server) {
     if (request.uri.path != '/signals') {
       request.response
@@ -79,6 +63,23 @@ void startPeriodicAnalysis(List<String> pairs) {
 
     _handleSocket(channel);
   }
+}
+
+/// ================= ENGINE SIGNAL HANDLER =================
+void _handleEngineSignal(MarketAnalysisResult result) {
+  final last = _lastSent[result.symbol];
+
+  if (last != null &&
+      DateTime.now().difference(last).inSeconds < cooldownSeconds) {
+    return;
+  }
+
+  _lastSent[result.symbol] = DateTime.now();
+
+  print("🔥 SIGNAL ${result.symbol} "
+      "${result.canBuy ? "BUY" : result.canSell ? "SELL" : "WAIT"}");
+
+  _broadcastSignal(result);
 }
 
 /// ================= SOCKET HANDLER =================
@@ -113,9 +114,11 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
     final data = jsonDecode(msg as String);
     if (data is! Map) return;
 
-    /// SUBSCRIBE
-    if (data['subscribe'] != null) {
-      final pair = data['subscribe'].toString();
+    final subscribe = data['subscribe'];
+    final unsubscribe = data['unsubscribe'];
+
+    if (subscribe != null) {
+      final pair = subscribe.toString();
       if (!allPairs28.contains(pair)) return;
 
       _clients.putIfAbsent(pair, () => []);
@@ -124,18 +127,14 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
       }
     }
 
-    /// UNSUBSCRIBE
-    if (data['unsubscribe'] != null) {
-      final pair = data['unsubscribe'].toString();
+    if (unsubscribe != null) {
+      final pair = unsubscribe.toString();
       _clients[pair]?.remove(socket);
     }
-
-    /// TRADE FEEDBACK (future use)
-    if (data['tradeResult'] != null) {}
   } catch (_) {}
 }
 
-/// ================= SIGNAL UPDATE (FAST) =================
+/// ================= UPDATE =================
 void _sendUpdate(WebSocketChannel socket, MarketAnalysisResult result) {
   final sockets = _clients[result.symbol];
   if (sockets == null || !sockets.contains(socket)) return;
@@ -151,27 +150,18 @@ void _sendUpdate(WebSocketChannel socket, MarketAnalysisResult result) {
     "confidence": result.indicators["confidence"] ?? 0,
     "buyScore": result.indicators["buy"] ?? 0,
     "sellScore": result.indicators["sell"] ?? 0,
-    "entry": result.risk.entry,
-    "stopLoss": result.risk.stopLoss,
-    "takeProfit": result.risk.takeProfit,
     "timestamp": DateTime.now().toUtc().toIso8601String(),
   });
 }
 
-/// ================= BROADCAST SIGNAL =================
+/// ================= BROADCAST =================
 void _broadcastSignal(MarketAnalysisResult result) {
   final sockets = _clients[result.symbol];
   if (sockets == null || sockets.isEmpty) return;
 
   final confidence = (result.indicators["confidence"] ?? 0).toDouble();
-  final buyScore = (result.indicators["buy"] ?? 0).toDouble();
-  final sellScore = (result.indicators["sell"] ?? 0).toDouble();
-
-  final tradeEnabled = confidence >= 75;
-  final autoExecute = confidence >= 80;
 
   final payload = {
-    "version": "3.1",
     "type": "signal",
     "symbol": result.symbol,
     "direction": result.canBuy
@@ -179,50 +169,15 @@ void _broadcastSignal(MarketAnalysisResult result) {
         : result.canSell
             ? "SELL"
             : "WAIT",
-
     "confidence": confidence,
-    "buyScore": buyScore,
-    "sellScore": sellScore,
-
-    "trendAligned": result.indicators["trendAligned"] ?? false,
-
     "entry": result.risk.entry,
     "stopLoss": result.risk.stopLoss,
     "takeProfit": result.risk.takeProfit,
-
-    "risk": {
-      "entry": result.risk.entry,
-      "sl": result.risk.stopLoss,
-      "tp": result.risk.takeProfit,
-      "lot": result.risk.lotSize,
-      "direction": result.risk.direction,
-    },
-
-    "analysis": {
-      "structureBuy": result.structureBuy,
-      "structureSell": result.structureSell,
-      "confirmationValid": result.confirmationValid,
-      "filtersValid": result.filtersValid,
-      "biasIsBuy": result.biasIsBuy,
-    },
-
     "ui": {
-      "tradeEnabled": tradeEnabled,
-      "autoExecute": autoExecute,
-      "strengthLevel": confidence >= 80
-          ? "STRONG"
-          : confidence >= 75
-              ? "MODERATE"
-              : "WEAK",
-      "priority": confidence >= 80
-          ? "HIGH"
-          : confidence >= 75
-              ? "MEDIUM"
-              : "LOW",
-      "glow": tradeEnabled,
-      "buttonState": tradeEnabled ? "ACTIVE" : "FROZEN"
+      "tradeEnabled": confidence >= 75,
+      "autoExecute": confidence >= 80,
+      "buttonState": confidence >= 75 ? "ACTIVE" : "FROZEN",
     },
-
     "timestamp": DateTime.now().toUtc().toIso8601String(),
   };
 
@@ -249,11 +204,6 @@ void _sendSnapshot(WebSocketChannel socket) {
               ? "SELL"
               : "WAIT",
       "confidence": r.indicators["confidence"] ?? 0,
-      "buyScore": r.indicators["buy"] ?? 0,
-      "sellScore": r.indicators["sell"] ?? 0,
-      "entry": r.risk.entry,
-      "stopLoss": r.risk.stopLoss,
-      "takeProfit": r.risk.takeProfit,
       "timestamp": DateTime.now().toUtc().toIso8601String(),
     };
   }
