@@ -7,6 +7,8 @@ import 'package:web_socket_channel/io.dart';
 
 import '../services/market_analysis_service.dart';
 import '../models/market_analysis_result.dart';
+import '../models/all_pairs.dart';
+import '../services/deriv_service.dart';
 
 /// ================= GLOBAL STATE =================
 final Map<String, List<WebSocketChannel>> _clients = {};
@@ -14,18 +16,9 @@ final Map<WebSocketChannel, StreamSubscription> _subscriptions = {};
 final Map<WebSocketChannel, Timer> _heartbeats = {};
 final Map<String, DateTime> _lastSent = {};
 
-const int cooldownSeconds = 3;
+final derivService = DerivService.instance;
 
-/// ================= PAIRS =================
-final List<String> allPairs28 = [
-  'frxEURUSD','frxAUDCAD','frxGBPUSD','frxUSDJPY',
-  'frxUSDCAD','frxUSDCHF','frxEURGBP','frxEURJPY',
-  'frxAUDJPY','frxGBPJPY','frxAUDUSD','frxNZDUSD',
-  'frxEURAUD','frxEURCAD','frxGBPAUD','frxGBPCHF',
-  'frxNZDJPY','frxCHFJPY','frxCADJPY','frxAUDNZD',
-  'frxGBPNZD','frxEURCHF','frxUSDNOK','frxUSDSEK',
-  'frxUSDZAR','frxUSDMXN'
-];
+const int cooldownSeconds = 3;
 
 /// ================= MAIN =================
 Future<void> main() async {
@@ -37,7 +30,6 @@ Future<void> main() async {
   await service.startPairs(allPairs28);
   service.startPeriodicAnalysis(allPairs28);
 
-  /// SINGLE STREAM (NO DUPLICATION)
   service.analysisStream.listen((result) {
     _handleEngineSignal(result);
   });
@@ -119,7 +111,9 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
 
     if (subscribe != null) {
       final pair = subscribe.toString();
+
       if (!allPairs28.contains(pair)) return;
+      if (!derivService.isReady(pair)) return;
 
       _clients.putIfAbsent(pair, () => []);
       if (!_clients[pair]!.contains(socket)) {

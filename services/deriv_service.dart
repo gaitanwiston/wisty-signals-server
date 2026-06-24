@@ -22,10 +22,8 @@ class DerivService {
 
   final Map<String, Map<TF, List<model.Candle>>> _data = {};
   final Set<String> _subscribed = {};
-
   final Map<String, bool> _ready = {};
 
-  /// 🔥 EVENT STREAM (IMPORTANT UPGRADE)
   final StreamController<Map<String, dynamic>> _stream =
       StreamController.broadcast();
 
@@ -52,8 +50,6 @@ class DerivService {
 
           if (data is Map<String, dynamic>) {
             _handle(data);
-
-            /// 🔥 ALWAYS PUSH RAW EVENT
             _stream.add(data);
           }
         } catch (e) {
@@ -69,7 +65,7 @@ class DerivService {
     );
 
     _send({"authorize": token ?? derivToken});
-
+    _send({"active_symbols": "brief"}); // 🔥 IMPORTANT FIX
     _startKeepAlive();
   }
 
@@ -78,9 +74,7 @@ class DerivService {
     _keepAlive?.cancel();
 
     _keepAlive = Timer.periodic(const Duration(seconds: 20), (_) {
-      if (_connected) {
-        _send({"ping": 1});
-      }
+      if (_connected) _send({"ping": 1});
     });
   }
 
@@ -96,11 +90,11 @@ class DerivService {
     final candles = data["candles"];
     if (candles is List) {
       final echo = data["echo_req"] ?? {};
-      final symbol = echo["ticks_history"] ?? "";
-      final gran = echo["granularity"] ?? 60;
 
+      final symbol = normalizeSymbol(echo["ticks_history"] ?? "");
       if (symbol.isEmpty) return;
 
+      final gran = echo["granularity"] ?? 60;
       final tf = _mapTF(gran);
 
       final parsed = candles.map<model.Candle>((c) {
@@ -116,7 +110,6 @@ class DerivService {
 
       _set(symbol, tf, parsed);
 
-      /// 🔥 IMPORTANT EVENT: DATA UPDATED
       _stream.add({
         "type": "candles_update",
         "symbol": symbol,
@@ -143,31 +136,45 @@ class DerivService {
   void _set(String symbol, TF tf, List<model.Candle> c) {
     _init(symbol);
     _data[symbol]![tf] = List.from(c);
-
     _buildAll(symbol);
   }
 
-  // ================= BUILD =================
+  // ================= BUILD (FIXED FOR SYNTHETIC) =================
   void _buildAll(String symbol) {
-    final m1 = _data[symbol]![TF.m1] ?? [];
+    final m1 = _data[symbol]?[TF.m1] ?? [];
+    final h4raw = _data[symbol]?[TF.h4] ?? [];
+    final d1raw = _data[symbol]?[TF.d1] ?? [];
 
-    if (m1.length < 200) {
+    if (m1.isEmpty && h4raw.isEmpty && d1raw.isEmpty) {
       _ready[symbol] = false;
       return;
     }
 
-    _data[symbol]![TF.h1] = _aggregate(m1, 60);
-    _data[symbol]![TF.h4] = _aggregate(m1, 240);
-    _data[symbol]![TF.d1] = _aggregate(m1, 1440);
-    _data[symbol]![TF.w1] = _aggregate(m1, 10080);
+    // 🔥 SAFE FALLBACK BUILD
+    if (m1.length >= 10) {
+      _data[symbol]![TF.h1] = _aggregate(m1, 60);
+      _data[symbol]![TF.h4] = _aggregate(m1, 240);
+      _data[symbol]![TF.d1] = _aggregate(m1, 1440);
+      _data[symbol]![TF.w1] = _aggregate(m1, 10080);
+    }
 
-    _ready[symbol] = true;
+    // 🔥 fallback if M1 is weak (CRITICAL FOR 1HZ / R_ / JD)
+    if (m1.length < 10 && h4raw.isNotEmpty) {
+      _data[symbol]![TF.h1] = h4raw;
+      _data[symbol]![TF.h4] = h4raw;
+      _data[symbol]![TF.d1] = d1raw;
+    }
 
-    /// 🔥 SIGNAL TO ENGINE THAT DATA IS READY
-    _stream.add({
-      "type": "data_ready",
-      "symbol": symbol,
-    });
+    _ready[symbol] =
+        (_data[symbol]![TF.h1]?.isNotEmpty ?? false) ||
+        (_data[symbol]![TF.h4]?.isNotEmpty ?? false);
+
+    if (_ready[symbol] == true) {
+      _stream.add({
+        "type": "data_ready",
+        "symbol": symbol,
+      });
+    }
   }
 
   // ================= AGGREGATION =================
@@ -196,36 +203,74 @@ class DerivService {
     return out;
   }
 
-  // ================= SUBSCRIBE =================
+  // ================= SUBSCRIBE (FIXED FOR SYNTHETIC) =================
   Future<void> subscribeCandles(String symbol) async {
     if (!_connected) await connect();
-    if (_subscribed.contains(symbol)) return;
 
-    _subscribed.add(symbol);
-    _init(symbol);
+    final s = normalizeSymbol(symbol);
 
+    if (_subscribed.contains(s)) return;
+    _subscribed.add(s);
+
+    _init(s);
+
+    // 🔥 WARMUP CALLS (IMPORTANT FIX)
+    _sendCandles(s, 60);
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    _sendCandles(s, 3600);
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    _sendCandles(s, 14400);
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    _sendCandles(s, 86400);
+
+    // 🔥 synthetic boost trigger
+    if (isSynthetic(s)) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      _sendCandles(s, 60);
+    }
+
+    _send({"ticks": s, "subscribe": 1});
+
+    print("📡 Subscribed FULL TF: $s");
+  }
+
+  void _sendCandles(String symbol, int granularity) {
     _send({
       "ticks_history": symbol,
       "style": "candles",
-      "granularity": 60,
+      "granularity": granularity,
       "end": "latest",
-      "count": 5000
+      "count": 5000,
+      "adjust_start_time": 1
     });
+  }
 
-    _send({
-      "ticks": symbol,
-      "subscribe": 1,
-    });
-
-    print("📡 Subscribed: $symbol");
+  // ================= SYNTHETIC DETECTION =================
+  bool isSynthetic(String symbol) {
+    return symbol.startsWith("R_") ||
+        symbol.startsWith("1HZ") ||
+        symbol.startsWith("BOOM") ||
+        symbol.startsWith("CRASH") ||
+        symbol.startsWith("JD") ||
+        symbol.startsWith("stpRNG");
   }
 
   // ================= GET =================
   List<model.Candle> getCandles(String symbol, TF tf) {
-    return _data[symbol]?[tf] ?? [];
+    final s = normalizeSymbol(symbol);
+    return _data[s]?[tf] ?? [];
   }
 
-  bool isReady(String symbol) => _ready[symbol] ?? false;
+  bool isReady(String symbol) {
+    final m1 = _data[symbol]?[TF.m1]?.length ?? 0;
+    final h1 = _data[symbol]?[TF.h1]?.length ?? 0;
+    final h4 = _data[symbol]?[TF.h4]?.length ?? 0;
+
+    return (m1 >= 10 || h4 >= 10) && h1 >= 5;
+  }
 
   // ================= SEND =================
   void _send(Map<String, dynamic> d) {
@@ -244,7 +289,6 @@ class DerivService {
     _auth = false;
 
     await Future.delayed(const Duration(seconds: 2));
-
     await connect();
   }
 
@@ -266,5 +310,10 @@ class DerivService {
       default:
         return TF.m1;
     }
+  }
+
+  // ================= NORMALIZE =================
+  String normalizeSymbol(String raw) {
+    return raw.trim().toUpperCase();
   }
 }
