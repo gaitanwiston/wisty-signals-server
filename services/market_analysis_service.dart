@@ -607,6 +607,27 @@ final Map<String, int> _componentFireCount = {
   'rsi': 0,
 };
 
+// ONGEZO JIPYA: kufuatilia MWELEKEO HALISI (buy/sell/none) wa W1/D1
+// kila mzunguko - hii inajibu swali "je BUY nyingi zinatoka wapi -
+// TREND YENYEWE (data ya soko), au mahali PENGINE kwenye decision
+// pipeline (bug inayoweza kukandamiza SELL)?" kwa uhakika. Kama
+// '_w1BiasCount'/'_d1BiasCount' zenyewe zinaonyesha "buy" mara nyingi
+// zaidi kuliko "sell" kwa UWIANO UNAOENDANA na jinsi 'decision'
+// inavyoishia, basi chanzo ni DATA/TREND halisi (si bug). Kama trend
+// ni MCHANGANYIKO (buy/sell karibu sawa) lakini 'decision' bado
+// inaishia BUY karibu KILA WAKATI, basi kuna upendeleo (bug)
+// mahali fulani KATI ya trend na uamuzi wa mwisho.
+final Map<String, int> _w1BiasCount = {'buy': 0, 'sell': 0, 'none': 0};
+final Map<String, int> _d1BiasCount = {'buy': 0, 'sell': 0, 'none': 0};
+
+final Map<String, int> _decisionCount = {
+  'wait': 0,
+  'buy': 0,
+  'strongBuy': 0,
+  'sell': 0,
+  'strongSell': 0,
+};
+
 /// Inarudisha ripoti ya asilimia halisi ya mara ngapi kila kigezo
 /// kimefyatuka (kwa upande wowote - buy au sell) kati ya mizunguko
 /// yote ya uchambuzi tangu injini ilipoanza (au tangu 'resetStats()'
@@ -655,13 +676,29 @@ void printSignalFrequencyStats() {
   }
 
   print('═══════════════════════════════════════');
+  print('[DIAGNOSTIC] MWELEKEO WA W1/D1 (chanzo cha TREND)');
+  print('W1: buy=${_w1BiasCount['buy']} sell=${_w1BiasCount['sell']} '
+      'none=${_w1BiasCount['none']}');
+  print('D1: buy=${_d1BiasCount['buy']} sell=${_d1BiasCount['sell']} '
+      'none=${_d1BiasCount['none']}');
+  print('───────────────────────────────────────');
+  print('[DIAGNOSTIC] MGAWANYO WA UAMUZI WA MWISHO');
   print(
-    'TAFSIRI: asilimia ndogo (mf. <10%) kwa Structure/Liquidity/'
-    'OrderBlock/PriceAction ni SAHIHI na inatarajiwa - hivi ni vigezo '
-    'vya "tukio maalum" (event-based), si vya "hali ya jumla" '
-    '(state-based) kama Trend/Momentum. Kama kigezo chochote kina 0.0% '
-    'HASA (0/$_totalAnalysisRuns) baada ya mizunguko mingi (>50), '
-    'HILO ni ishara ya bug halisi inayohitaji kuchunguzwa.',
+    'wait=${_decisionCount['wait']} buy=${_decisionCount['buy']} '
+    'strongBuy=${_decisionCount['strongBuy']} '
+    'sell=${_decisionCount['sell']} '
+    'strongSell=${_decisionCount['strongSell']}',
+  );
+  print('═══════════════════════════════════════');
+  print(
+    'TAFSIRI YA "KWA NINI BUY TU, HAKUNA SELL": Linganisha uwiano wa '
+    'W1/D1 (buy dhidi ya sell) na uwiano wa uamuzi wa mwisho (buy '
+    'dhidi ya sell). Kama uwiano UNAENDANA (mf. W1 ni 90% buy NA '
+    'uamuzi wa mwisho ni ~90% buy) - upendeleo unatoka TREND YENYEWE '
+    '(data ya soko/dirisha la muda, SI bug). Kama W1/D1 ni '
+    'MCHANGANYIKO (mf. 50/50) LAKINI uamuzi wa mwisho bado ni BUY '
+    'KARIBU KILA WAKATI - HILO ni ishara ya bug halisi kati ya trend '
+    'na uamuzi wa mwisho inayohitaji kuchunguzwa zaidi.',
   );
 }
 
@@ -672,6 +709,15 @@ void resetSignalFrequencyStats() {
   _totalAnalysisRuns = 0;
   for (final key in _componentFireCount.keys) {
     _componentFireCount[key] = 0;
+  }
+  for (final key in _w1BiasCount.keys) {
+    _w1BiasCount[key] = 0;
+  }
+  for (final key in _d1BiasCount.keys) {
+    _d1BiasCount[key] = 0;
+  }
+  for (final key in _decisionCount.keys) {
+    _decisionCount[key] = 0;
   }
 }
 
@@ -1288,6 +1334,18 @@ if (buyScore.rsi > 0 || sellScore.rsi > 0) {
   _componentFireCount['rsi'] = _componentFireCount['rsi']! + 1;
 }
 
+// ONGEZO JIPYA: hesabu HALISI ya mwelekeo wa W1/D1 - angalia maelezo
+// marefu kwenye tamko la '_w1BiasCount'/'_d1BiasCount' hapo juu.
+final w1Key = w1Bias == MarketBias.buy
+    ? 'buy'
+    : (w1Bias == MarketBias.sell ? 'sell' : 'none');
+_w1BiasCount[w1Key] = _w1BiasCount[w1Key]! + 1;
+
+final d1Key = d1Bias == MarketBias.buy
+    ? 'buy'
+    : (d1Bias == MarketBias.sell ? 'sell' : 'none');
+_d1BiasCount[d1Key] = _d1BiasCount[d1Key]! + 1;
+
    final buy =
     buyScore.total;
 
@@ -1335,6 +1393,20 @@ final decision =
       rsiOverbought: rsiOverbought,
       rsiOversold: rsiOversold,
     );
+
+// ONGEZO JIPYA: hesabu HALISI ya uamuzi wa mwisho (wait/buy/
+// strongBuy/sell/strongSell) - ikilinganishwa na
+// '_w1BiasCount'/'_d1BiasCount' hapo juu, hii inatuonyesha WAZI kama
+// upendeleo wa BUY unatoka TREND YENYEWE (data), au kama unaongezeka
+// zaidi KATI ya trend na uamuzi wa mwisho (ishara ya bug).
+final decisionKey = switch (decision.decision) {
+  TradeDecision.wait => 'wait',
+  TradeDecision.buy => 'buy',
+  TradeDecision.strongBuy => 'strongBuy',
+  TradeDecision.sell => 'sell',
+  TradeDecision.strongSell => 'strongSell',
+};
+_decisionCount[decisionKey] = _decisionCount[decisionKey]! + 1;
 
 
 // FIX #4 (ilisasishwa): 'confluenceOk'/'enoughConfirmations' za zamani
@@ -1484,6 +1556,9 @@ _log("════════════════════════�
         candlesM5: const [],
         canBuy: false,
         canSell: false,
+        // KUMBUKA (server 1): modeli ya server hii HAINA
+        // 'isValidTrade' - imeondolewa kimakusudi (tofauti na toleo
+        // la server 2).
         structureValid: false,
         emaValid: false,
         rsiValid: false,
@@ -1767,6 +1842,10 @@ _log("════════════════════════�
 
       canBuy: isBuy,
       canSell: isSell,
+
+      // KUMBUKA (server 1): modeli ya server hii HAINA 'isValidTrade'
+      // - imeondolewa kimakusudi (tofauti na toleo la server 2).
+      // Popote panapohitajika dhana hii, tumia 'canBuy || canSell'.
 
       // FIX (uongo uliondolewa): hizi zilikuwa 'true' bila masharti -
       // sasa zinaonyesha UKWELI wa kama data ilitosha kuhesabu kila
