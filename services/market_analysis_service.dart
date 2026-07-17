@@ -1545,6 +1545,75 @@ _log("════════════════════════�
     final minAtr = entry * 0.0005;
     final safeAtr = atr < minAtr ? minAtr : atr;
 
+    // ================= SL/TP: STRUCTURE-AWARE (ONGEZO JIPYA) =================
+    // FIX (SL/TP zenye ufahamu wa muundo wa soko - kwa ombi la
+    // mtumiaji): awali SL/TP zilikuwa zikitumia ATR "kipofu" (umbali
+    // wa kudhania, bila kujali muundo halisi wa soko - swingHigh/
+    // swingLow/OB tuliyoshahesabu kabisa kwenye 'h4Analysis' hazikuwa
+    // zikitumika KAMWE kwenye uamuzi wa SL/TP). Sasa: SL inawekwa
+    // KIDOGO NYUMA ya kiwango cha KWELI cha muundo (swing ya
+    // karibuni, au OB kama ipo na iko mbali zaidi) - kanuni ya
+    // kawaida ya usimamizi wa hatari (weka SL mahali ambapo, kama
+    // ikigongwa, inamaanisha KWELI wazo la trade limekosewa - si
+    // mahali pa kudhania).
+    //
+    // TP inatokana na UMBALI HALISI wa SL hii mpya (bado uwiano wa
+    // 1:3) - kwa hiyo TP NAYO inabadilika kulingana na muundo halisi,
+    // si nafasi ya kudhania iliyotenganishwa na soko.
+    double stopLossFinal;
+
+    if (isBuy) {
+      double buyLevel = h4Analysis.structureSwingLow;
+
+      if (h4Analysis.bullishOB && h4Analysis.obLow > 0) {
+        buyLevel = min(buyLevel, h4Analysis.obLow);
+      }
+
+      // Buffer ndogo (0.2xATR) chini ya kiwango cha muundo - kanuni
+      // ya kawaida ya kuepuka "stop hunting" karibu na viwango
+      // dhahiri ambavyo wafanyabiashara wengine wanaweka SL zao.
+      final structureSL = buyLevel - (safeAtr * 0.2);
+      final structureDistance = entry - structureSL;
+
+      // Usalama: SL ya kimuundo LAZIMA iwe chini ya entry (halali kwa
+      // BUY), na isiwe mbali mno (>5xATR - ishara ya swing isiyofaa
+      // kutumika, mf. data finyu au swing ya zamani mno) wala karibu
+      // mno (<=0 - data batili). Nje ya mipaka hii, rudi kwenye ATR
+      // ya kawaida (fallback salama).
+      if (buyLevel > 0 &&
+          structureSL < entry &&
+          structureDistance > 0 &&
+          structureDistance <= safeAtr * 5) {
+        stopLossFinal = structureSL;
+      } else {
+        stopLossFinal = entry - safeAtr;
+      }
+    } else {
+      double sellLevel = h4Analysis.structureSwingHigh;
+
+      if (h4Analysis.bearishOB && h4Analysis.obHigh > 0) {
+        sellLevel = max(sellLevel, h4Analysis.obHigh);
+      }
+
+      final structureSL = sellLevel + (safeAtr * 0.2);
+      final structureDistance = structureSL - entry;
+
+      if (sellLevel > 0 &&
+          structureSL > entry &&
+          structureDistance > 0 &&
+          structureDistance <= safeAtr * 5) {
+        stopLossFinal = structureSL;
+      } else {
+        stopLossFinal = entry + safeAtr;
+      }
+    }
+
+    final stopDistanceFinal = (entry - stopLossFinal).abs();
+
+    final takeProfitFinal = isBuy
+        ? entry + stopDistanceFinal * 3
+        : entry - stopDistanceFinal * 3;
+
     // ================= SAFETY =================
     if (entry <= 0 || atr <= 0) {
       return MarketAnalysisResult(
@@ -1844,8 +1913,8 @@ _log("════════════════════════�
       canSell: isSell,
 
       // KUMBUKA (server 1): modeli ya server hii HAINA 'isValidTrade'
-      // - imeondolewa kimakusudi (tofauti na toleo la server 2).
-      // Popote panapohitajika dhana hii, tumia 'canBuy || canSell'.
+      // - imeondolewa kimakusudi. Tumia 'canBuy || canSell' popote
+      // panapohitajika dhana hii.
 
       // FIX (uongo uliondolewa): hizi zilikuwa 'true' bila masharti -
       // sasa zinaonyesha UKWELI wa kama data ilitosha kuhesabu kila
@@ -2073,8 +2142,8 @@ indicators: {
       conditionsMet: conditionsMetList,
       reasonsFailed: reasonsFailedList,
 
-      stopLoss: isBuy ? entry - safeAtr : entry + safeAtr,
-      takeProfit: isBuy ? entry + safeAtr * 3 : entry - safeAtr * 3,
+      stopLoss: stopLossFinal,
+      takeProfit: takeProfitFinal,
 
       structureBuy: isBuy,
       structureSell: isSell,
@@ -2087,8 +2156,8 @@ indicators: {
 
       risk: RiskModel(
         entry: entry,
-        stopLoss: isBuy ? entry - safeAtr : entry + safeAtr,
-        takeProfit: isBuy ? entry + safeAtr * 3 : entry - safeAtr * 3,
+        stopLoss: stopLossFinal,
+        takeProfit: takeProfitFinal,
         lotSize: 0.1,
         direction: isBuy
             ? "BUY"
