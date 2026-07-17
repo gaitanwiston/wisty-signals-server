@@ -13,7 +13,7 @@ import '../models/candle.dart' as model;
 // akaunti yako ya Deriv) bado ipo - itafutwa (revoke) na kuhamishiwa
 // kwenye --dart-define/.env pale utakapokuwa tayari.
 const String derivToken =
-    "pat_0fccfffc5d1eaace805fb961cd606399a8665f15e6e40da9cdd313a67ac8ec08";
+    "pat_572705c43ba96a052bdb5cf0eb9247c2e8efde648548b4cc172111354e9b4338";
 
 const int derivAppId = 1089;
 
