@@ -579,13 +579,27 @@ class DerivService {
 
       if(list is List){
 
-
+        // 🚨🚨🚨 FIX YA BUG HALISI (sababu ya "pairs zote NULL"):
+        // Deriv Options API imebadilisha jina la field kutoka
+        // "symbol" kwenda "underlying_symbol" kwenye jibu la
+        // 'active_symbols' (imethibitishwa kwenye nyaraka rasmi za
+        // Deriv - "Active symbols Comparison"). Code ya awali
+        // ilikuwa ikisoma 'e["symbol"]' - ambayo sasa HAIPO kabisa
+        // (null) - na 'null.toString()' kwenye Dart INARUDISHA
+        // MAANDIKO HALISI "null" (si hitilafu/exception) - ndiyo
+        // maana kila pair ilikuwa ikionekana kama "NULL" badala ya
+        // jina halisi. Sasa tunasoma 'underlying_symbol' KWANZA, na
+        // 'symbol' kama fallback (endapo Deriv itarudi kwenye jina
+        // la zamani siku moja), na tunaruka (skip) entries
+        // zisizokuwa na jina lolote sahihi badala ya kuhifadhi
+        // "null" kama jina.
         _marketPairs
           ..clear()
           ..addAll(
-            list.map(
-              (e)=>e["symbol"].toString()
-            ),
+            list
+                .map((e) =>
+                    (e["underlying_symbol"] ?? e["symbol"])?.toString())
+                .whereType<String>(),
           );
 
         // 🚨 ONGEZO JIPYA (fix ya bug hatari ya casing - safari hii kwa
@@ -609,7 +623,8 @@ class DerivService {
         // placeTrade()) kupata jina sahihi kabla ya kutuma ombi la
         // trade halisi.
         for (final e in list) {
-          final rawSymbol = e["symbol"]?.toString();
+          final rawSymbol =
+              (e["underlying_symbol"] ?? e["symbol"])?.toString();
           if (rawSymbol != null && rawSymbol.isNotEmpty) {
             _originalCasing[normalizeSymbol(rawSymbol)] = rawSymbol;
           }
