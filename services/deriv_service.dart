@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:http/http.dart' as http;
 
 import '../models/candle.dart' as model;
 
@@ -13,9 +14,29 @@ import '../models/candle.dart' as model;
 // akaunti yako ya Deriv) bado ipo - itafutwa (revoke) na kuhamishiwa
 // kwenye --dart-define/.env pale utakapokuwa tayari.
 const String derivToken =
-    "pat_572705c43ba96a052bdb5cf0eb9247c2e8efde648548b4cc172111354e9b4338";
+    "pat_e4a19bbef8ce170aa1d9d57682be9d2877a88ff77d061fc9ddea455845a81850";
 
-const int derivAppId = 1089;
+// 🚨🚨🚨 CHANZO KIKUU CHA "InvalidToken" TULICHOKIGUNDUA: '1089' ni
+// app_id ya UMMA/MFANO ya Deriv (inatumika kwenye mifano YOTE ya
+// nyaraka zao rasmi - "app_id 1089 is for testing, create your own
+// app_id"). Kwa matumizi ya kudumu/uzalishaji na token ya kibinafsi,
+// SAJILI APP_ID YAKO MWENYEWE kupitia https://api.deriv.com (au
+// developers.deriv.com/docs/app-registration - "Register
+// Application"), kisha BADILISHA NAMBA HII kwa app_id yako halisi.
+//
+// FIX (aina ya data): 'derivAppId' sasa ni String (si int) - Deriv
+// imebadilisha muundo wa App ID kwa usajili mpya (sasa ni
+// herufi+namba mchanganyiko, si namba tupu kama '1089' ya zamani).
+const String derivAppId = "33SNU6dEw3F7xVhyEHxz3"; // 🚨 BADILISHA HII na App ID yako mwenyewe
+
+// 🚨🚨🚨 ONGEZO JIPYA MUHIMU SANA: umegundulika kwamba akaunti hii
+// inatumia bidhaa ya "Options" (mpya) ya Deriv - ambayo ina API TOFAUTI
+// KABISA na "Classic" (Multipliers/CFDs) tuliyokuwa tukiitumia awali.
+// Options API HAIHITAJI ujumbe wa "authorize" kabisa - badala yake
+// inahitaji hatua ya REST kwanza (kupata "OTP" - One Time Password)
+// ikitumia Account ID + Token, KISHA kuunganisha kwa WebSocket URL
+// maalum inayorudishwa (yenye OTP ndani yake tayari).
+const String derivAccountId = "ROT91878830"; // Account ID yako
 
 
 // FIX / MABORESHO: awali kulikuwa tu na m1, h1, h4, d1, w1, mn.
@@ -97,6 +118,26 @@ class DerivService {
 
   final List<String> _marketPairs = [];
 
+  // ONGEZO JIPYA: ramani ya "jina lililosawazishwa (UPPERCASE) -> jina
+  // halisi kama Deriv inavyolitambua" - angalia maelezo marefu kwenye
+  // _handle() sehemu ya "active_symbols".
+  final Map<String, String> _originalCasing = {};
+
+  /// Inarudisha jina HALISI la alama (herufi sahihi kama Deriv
+  /// inavyolitambua, mf. "frxEURUSD") kutoka jina lolote la ingizo
+  /// (UPPERCASE au vinginevyo). Kama halijapatikana kwenye ramani
+  /// (mf. 'getMarketPairs()' haijawahi kuitwa), inarudisha ingizo
+  /// lililopewa bila kubadilika - angalau si mbaya zaidi ya awali.
+  ///
+  /// MUHIMU: ITUMIKE KABLA ya kuita placeTrade() kwa TRADE HALISI -
+  /// vinginevyo jina la UPPERCASE (kutoka UI/signal payload) litatumwa
+  /// moja kwa moja kwa Deriv, na litakataliwa/kutokutambuliwa kwa
+  /// alama zenye herufi mchanganyiko kiasili (FRX*, CRY*, stpRNG*).
+  String resolveOriginalCasing(String anyCasing) {
+    final key = normalizeSymbol(anyCasing);
+    return _originalCasing[key] ?? anyCasing;
+  }
+
 
 
   final StreamController<Map<String,dynamic>> _stream =
@@ -139,22 +180,34 @@ class DerivService {
     try {
       _token = token ?? derivToken;
 
+      // 🚨🚨🚨 MABADILIKO MAKUBWA (Options API - OTP flow): tofauti na
+      // API ya "Classic" (ambayo tulikuwa tukiiunganisha moja kwa moja
+      // kwa WebSocket kisha kutuma ujumbe wa "authorize"), Options API
+      // inahitaji HATUA YA REST KWANZA - kuomba "OTP" (One Time
+      // Password) ikitumia Account ID + Token, KISHA kuunganisha kwa
+      // WebSocket URL MAALUM inayorudishwa (OTP tayari imo ndani ya
+      // URL hiyo - HAKUNA ujumbe wa "authorize" unaohitajika tena).
+      print("🔌 Kupata OTP URL kutoka Deriv Options API...");
 
+      final otpUrl = await _fetchOtpUrl();
 
-      final uri = Uri.parse(
-        "wss://ws.derivws.com/websockets/v3?app_id=$derivAppId",
-      );
+      if (otpUrl == null) {
+        print(
+          "❌ Imeshindwa kupata OTP URL - muunganiko hauwezekani. "
+          "Angalia Account ID, App ID, na Token yako.",
+        );
+        _connected = false;
+        _auth = false;
+        _connecting = false;
+        _reconnect();
+        return;
+      }
 
+      final uri = Uri.parse(otpUrl);
 
+      print("🔌 Connecting Deriv (Options API, OTP)...");
 
-      print("🔌 Connecting Deriv...");
-
-
-
-      _channel =
-          WebSocketChannel.connect(uri);
-
-
+      _channel = WebSocketChannel.connect(uri);
 
       _sub = _channel!.stream.listen(
 
@@ -215,30 +268,41 @@ class DerivService {
 
       _connected=true;
 
-      _auth=false;
+      // 🚨 MABADILIKO MAKUBWA: Options API HAIHITAJI ujumbe wa
+      // "authorize" - OTP kwenye URL YENYEWE tayari imethibitisha
+      // kikao (session) KABLA hata hatujaunganisha. Kwa hiyo
+      // tunaweka '_auth=true' MARA MOJA hapa (si kusubiri jibu la
+      // "authorize" kama ilivyokuwa kwenye API ya Classic - jibu
+      // hilo HALIWAHI kutumwa kwenye Options API kabisa).
+      _auth = true;
 
+      print("✅ Deriv Authorized (Options API - OTP)");
 
-
+      // FIX: kazi zilizokuwa zikitokea ndani ya '_handle()' sehemu ya
+      // "authorize" (kutuma active_symbols, kurejesha live
+      // subscriptions baada ya reconnect) sasa zinaitwa MOJA KWA MOJA
+      // hapa - mara tu muunganiko wa Options API unapofanikiwa.
       _send({
-
-        "authorize":_token
-
+        "active_symbols": "brief",
       });
 
-      // FIX (bug halisi ya muda - sababu kuu inayowezekana ya
-      // "alama chache sana"): awali 'active_symbols' ilikuwa
-      // ikitumwa MARA MOJA baada ya 'authorize', bila kusubiri Deriv
-      // ithibitishe kwamba akaunti imeshaingia (authorized) kikamilifu.
-      // Kama seva ya Deriv ikichakata 'active_symbols' KABLA ya
-      // kutambua session imeshaidhinishwa, inarudisha ORODHA CHACHE
-      // ZAIDI (default/isiyo na akaunti) badala ya orodha KAMILI
-      // inayopatikana kwa akaunti yako halisi (mamia ya alama - forex,
-      // synthetics, crypto, commodities, stocks).
-      //
-      // Sasa 'active_symbols' HAITUMWI hapa tena - inatumwa TU baada
-      // ya kupokea uthibitisho wa 'authorize' (angalia _handle()
-      // sehemu ya "AUTH" - ndipo ombi la active_symbols linapotumwa
-      // sasa).
+      if (_liveSubs.isNotEmpty) {
+        print(
+          "🔁 Inarejesha (resubscribe) live subscriptions "
+          "${_liveSubs.length} baada ya muunganiko...",
+        );
+
+        final toRestore = List<_LiveSub>.from(_liveSubs);
+
+        for (final sub in toRestore) {
+          subscribeCandles(
+            sub.symbolRaw,
+            tf: sub.tf,
+            live: true,
+            force: true,
+          );
+        }
+      }
 
       _startKeepAlive();
 
@@ -264,6 +328,58 @@ class DerivService {
 
     }
 
+  }
+
+  // =====================================================
+  // FETCH OTP URL (ONGEZO JIPYA - Options API)
+  // =====================================================
+  //
+  // Inaomba "OTP" (One Time Password) kutoka Deriv kupitia REST
+  // endpoint, ikitumia Account ID + Token kama uthibitisho. Jibu
+  // lina URL KAMILI ya WebSocket (yenye OTP ndani yake) - tunatumia
+  // URL hiyo moja kwa moja kuunganisha, bila hatua nyingine yoyote
+  // ya uthibitisho.
+  Future<String?> _fetchOtpUrl() async {
+    try {
+      final uri = Uri.parse(
+        "https://api.derivws.com/trading/v1/options/accounts/"
+        "$derivAccountId/otp",
+      );
+
+      final response = await http.post(
+        uri,
+        headers: {
+          "Deriv-App-ID": derivAppId,
+          "Authorization": "Bearer ${_token ?? derivToken}",
+        },
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        final url = data["data"]?["url"] as String?;
+
+        if (url == null) {
+          print(
+            "❌ OTP response haina 'url' inayotarajiwa: ${response.body}",
+          );
+          return null;
+        }
+
+        print("✅ OTP URL imepatikana kikamilifu.");
+
+        return url;
+      } else {
+        print(
+          "❌ OTP fetch imeshindwa: HTTP ${response.statusCode} - "
+          "${response.body}",
+        );
+        return null;
+      }
+    } catch (e) {
+      print("❌ OTP fetch error: $e");
+      return null;
+    }
   }
 
 
@@ -329,7 +445,55 @@ class DerivService {
 
     // ================= AUTH =================
 
+    // KUMBUKA (baada ya mabadiliko ya Options API/OTP): block hii
+    // (na yote ndani yake) SASA NI DEAD CODE kwa mtiririko wa kawaida
+    // - Options API HAITUMI ujumbe wa "authorize" kabisa (uthibitisho
+    // unafanyika kupitia OTP kwenye URL ya WebSocket YENYEWE, kabla
+    // hata ya kuunganisha - angalia connect()/_fetchOtpUrl()).
+    // Nimeibakiza hapa BILA kuiondoa - kwa usalama, endapo siku moja
+    // itahitajika kurudi kwenye API ya "Classic" (Multipliers/CFDs),
+    // au endapo Deriv itatuma ujumbe wa aina hii kwa sababu nyingine
+    // isiyotarajiwa.
     if(type=="authorize"){
+
+      // 🚨🚨🚨 FIX YA BUG MUHIMU ZAIDI TULIYOIPATA LEO: awali hapa
+      // tulikuwa tukiweka '_auth=true' na kuchapisha "✅ Deriv
+      // Authorized" MARA TU 'msg_type=="authorize"' ilipofika - BILA
+      // KUANGALIA kama jibu hilo hilo lina 'error' field ndani yake!
+      //
+      // Tuligundua (kupitia uchunguzi wa balance) kwamba Deriv
+      // INARUDISHA 'msg_type' ILE ILE ya ombi (mf. "balance",
+      // "authorize") HATA KAMA kuna hitilafu - hitilafu inajificha
+      // KATIKA 'error' field ndani ya jibu hilo hilo, SI kwenye
+      // 'msg_type: "error"' ya jumla kama tulivyodhania awali. Kwa
+      // hiyo: kama TOKEN ni batili/imefutwa (revoked) - jambo
+      // linalowezekana SANA endapo umekuwa ukibadilisha token mara
+      // kwa mara - Deriv inarudisha 'msg_type:"authorize"' IKIWA NA
+      // 'error' (mf. "InvalidToken") - na code ya AWALI ilikuwa
+      // ikiiona TU 'msg_type=="authorize"' na kusherehekea mafanikio
+      // ya uongo, bila kuangalia error hiyo KABISA! Hii ndiyo
+      // iliyosababisha kila ombi la baadaye (balance, n.k.)
+      // kushindwa kwa "AuthorizationRequired - Please log in" - kwa
+      // sababu HALISI hatukuwahi ku-authorize kikamilifu.
+      final authError = data["error"];
+
+      if (authError != null) {
+
+        _auth = false;
+
+        print(
+          "❌❌❌ AUTHORIZE IMESHINDWA: "
+          "${authError["code"]} - ${authError["message"]} | "
+          "ANGALIA TOKEN YAKO - inawezekana imefutwa (revoked) au si "
+          "sahihi. Hakuna ombi lolote la baadaye litakalofanya kazi "
+          "hadi hili litatuliwe.",
+        );
+
+        // FIX: usiendelee kutuma active_symbols/resubscribe - hazina
+        // maana yoyote kama authorize halisi haikufanikiwa (zingeshindwa
+        // kwa sababu ile ile).
+
+      } else {
 
       _auth=true;
 
@@ -396,6 +560,10 @@ class DerivService {
 
     }
 
+    } // FIX: kufunga 'else' block iliyoongezwa (angalia mwanzo wa
+      // 'if(type=="authorize")' - sasa kuna njia mbili: authError!=null
+      // (kushindwa) au else (mafanikio, mantiki ya awali yote).
+
 
 
 
@@ -420,6 +588,32 @@ class DerivService {
             ),
           );
 
+        // 🚨 ONGEZO JIPYA (fix ya bug hatari ya casing - safari hii kwa
+        // UTEKELEZAJI WA TRADE, si kupata candles tu): server ya
+        // risk management (server 2) inapokea jina la alama kutoka UI
+        // likiwa TAYARI limesawazishwa (UPPERCASE, kutoka kwa
+        // signals_server.dart ya server 1 - angalia maelezo marefu
+        // huko). Kwa hiyo, kwa wakati trades.dart inapotaka kufungua
+        // TRADE HALISI, haina tena jina sahihi la Deriv (mf.
+        // "frxEURUSD" - herufi mchanganyiko) - ina TU "FRXEURUSD"
+        // (UPPERCASE). Kama tungetuma hilo moja kwa moja kwa Deriv
+        // kwenye ombi la 'proposal'/'buy', tungerudia BUG ILE ILE ya
+        // casing tuliyoipata na kuirekebisha kwa ajili ya
+        // 'ticks_history' - lakini safari hii ingeathiri UTEKELEZAJI
+        // WA PESA HALISI, si uchambuzi tu.
+        //
+        // Sasa: ramani (map) ya "UPPERCASE -> jina halisi" inajengwa
+        // hapa (chanzo cha uhakika - moja kwa moja kutoka Deriv
+        // 'active_symbols'), na 'resolveOriginalCasing()' hapa chini
+        // inaruhusu caller yeyote (mf. trades.dart kabla ya
+        // placeTrade()) kupata jina sahihi kabla ya kutuma ombi la
+        // trade halisi.
+        for (final e in list) {
+          final rawSymbol = e["symbol"]?.toString();
+          if (rawSymbol != null && rawSymbol.isNotEmpty) {
+            _originalCasing[normalizeSymbol(rawSymbol)] = rawSymbol;
+          }
+        }
 
         print(
           "📊 ACTIVE SYMBOLS: ${_marketPairs.length}"
@@ -775,8 +969,109 @@ Future<String?> placeTrade(
 
 
   // =====================================================
-  // INIT CACHE
+  // UPDATE CONTRACT SL/TP (ONGEZO JIPYA)
   // =====================================================
+  //
+  // MADHUMUNI: kubadilisha SL/TP HALISI za contract iliyo wazi tayari
+  // kwenye Deriv - kupitia ombi la 'contract_update' (limethibitishwa
+  // kutoka developers.deriv.com/comparison/contract-update/). Hii
+  // ndiyo njia PEKEE ya kufanya "breakeven"/"TP extension" kuwa
+  // HALISI upande wa Deriv - bila hii, mabadiliko ya SL/TP ni ya
+  // NDANI TU (kwenye kumbukumbu ya server), Deriv haijui kabisa kuhusu
+  // mabadiliko hayo, na 'limit_order' ya AWALI (wakati wa
+  // kufungua trade) ndiyo pekee inayotekelezwa kama muunganisho
+  // ukikatika.
+  //
+  // ⚠️ MUHIMU: Deriv 'limit_order.stop_loss'/'take_profit' kwenye
+  // 'contract_update' ni KWA FEDHA (kiasi cha hasara/faida - USD), SI
+  // bei ghafi ya soko - SAWA KABISA na 'placeTrade()'. Kwa hiyo
+  // tunahitaji 'entryPrice'/'stake'/'multiplier' za AWALI (kutoka
+  // wakati trade ilipofunguliwa) kuhesabu kiasi sahihi cha fedha kwa
+  // bei mpya ya SL/TP.
+  Future<bool> updateContractSLTP(
+    String contractId, {
+    double? newStopLossPrice,
+    double? newTakeProfitPrice,
+    required double entryPrice,
+    required double stake,
+    required int multiplier,
+  }) async {
+    if (entryPrice <= 0) {
+      print("⚠️ updateContractSLTP: entryPrice batili ($entryPrice).");
+      return false;
+    }
+
+    final Map<String, dynamic> limitOrder = {};
+
+    if (newStopLossPrice != null) {
+      final slPercent = (entryPrice - newStopLossPrice).abs() / entryPrice;
+      final slAmount = stake * multiplier * slPercent;
+      limitOrder["stop_loss"] = double.parse(slAmount.toStringAsFixed(2));
+    }
+
+    if (newTakeProfitPrice != null) {
+      final tpPercent = (newTakeProfitPrice - entryPrice).abs() / entryPrice;
+      final tpAmount = stake * multiplier * tpPercent;
+      limitOrder["take_profit"] = double.parse(tpAmount.toStringAsFixed(2));
+    }
+
+    if (limitOrder.isEmpty) {
+      print("⚠️ updateContractSLTP: hakuna SL/TP mpya iliyotolewa.");
+      return false;
+    }
+
+    final contractIdInt = int.tryParse(contractId);
+
+    if (contractIdInt == null) {
+      print("⚠️ updateContractSLTP: contractId si namba halali ($contractId).");
+      return false;
+    }
+
+    final completer = Completer<Map<String, dynamic>>();
+    late StreamSubscription sub;
+
+    sub = stream.listen((event) {
+      if (event["msg_type"] == "contract_update") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      } else if (event["msg_type"] == "error") {
+        if (!completer.isCompleted) completer.complete(event);
+        sub.cancel();
+      }
+    });
+
+    _send({
+      "contract_update": 1,
+      "contract_id": contractIdInt,
+      "limit_order": limitOrder,
+    });
+
+    final result = await completer.future.timeout(
+      const Duration(seconds: 10),
+      onTimeout: () => <String, dynamic>{},
+    );
+
+    if (result["msg_type"] == "error") {
+      print(
+        "❌ contract_update error ($contractId): "
+        "${result["error"]?["message"] ?? result["error"]}",
+      );
+      return false;
+    }
+
+    final ok = result["contract_update"] != null;
+
+    if (ok) {
+      print(
+        "✅ CONTRACT UPDATED $contractId: "
+        "SL/TP mpya (fedha) => $limitOrder",
+      );
+    }
+
+    return ok;
+  }
+
+
 
 
   void _init(String symbol){
@@ -1054,6 +1349,12 @@ List<model.Candle> _aggregateCalendar(
     // 'symbolRaw' (jina HALISI, bila kubadilishwa) ndiyo inayotumwa
     // kwa Deriv kwenye "ticks_history".
     final symbol = normalizeSymbol(symbolRaw);
+
+    // ONGEZO JIPYA: jaza ramani ya casing hapa pia (si tu
+    // active_symbols/getMarketPairs) - uimara wa ziada endapo
+    // subscribeCandles() inatumika kabla ya getMarketPairs() kuwahi
+    // kuitwa.
+    _originalCasing[symbol] = symbolRaw;
 
     _init(symbol);
 
@@ -1945,9 +2246,94 @@ List<model.Candle> _aggregateCalendar(
 
 
 
-  Future<double> getBalance()
+  // 🚨 ONGEZO JIPYA (fix ya "AuthorizationRequired" isiyotarajiwa chini
+  // ya mzigo mkubwa): tuligundua (kupitia uchunguzi wa kina) kwamba
+  // wakati wa 'bootstrap' yenye mzigo mkubwa (alama 92 zikijisajili),
+  // muunganiko unaweza kukatika/kuungana upya KIMYA KIMYA (reconnect),
+  // na ombi la 'balance' lililotumwa KABLA ya hilo linabaki likisubiri
+  // jibu ambalo Deriv inalichakata kwenye SESSION MPYA isiyo na
+  // authorize bado - likitoa "AuthorizationRequired" HATA KAMA TOKEN
+  // NI SAHIHI (ilithibitishwa kwenye Deriv Playground).
+  //
+  // Sasa 'getBalance()' (jina la umma) ni WRAPPER inayojaribu tena
+  // MOJA KWA MOJA (hadi mara 3) endapo itagundua '_auth' ilikuwa
+  // FALSE kabla au baada ya jaribio - ishara kwamba reconnect
+  // ilitokea wakati wa ombi hilo.
+  Future<double> getBalance() async {
+    const maxAttempts = 3;
+
+    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+      final authBefore = _auth;
+
+      final result = await _getBalanceOnce();
+
+      final authAfter = _auth;
+
+      // Kama auth ilikuwa (na ikabaki) 'true' wakati WOTE wa jaribio
+      // hili, hatuna ishara ya reconnect - kubali matokeo (hata kama
+      // ni 0.0 - inaweza kuwa balance halisi ya akaunti tupu).
+      if (authBefore && authAfter) {
+        return result;
+      }
+
+      if (attempt < maxAttempts) {
+        print(
+          "🔁 getBalance(): jaribio $attempt/$maxAttempts - auth "
+          "ilikuwa isiyo imara (authBefore=$authBefore, "
+          "authAfter=$authAfter) - uwezekano wa reconnect wakati wa "
+          "ombi. Kusubiri kidogo kisha kujaribu tena...",
+        );
+
+        await Future.delayed(const Duration(seconds: 3));
+      }
+    }
+
+    print(
+      "❌ getBalance(): majaribio yote $maxAttempts yameshindwa kupata "
+      "session imara - kurudisha matokeo ya mwisho ($_balance).",
+    );
+
+    return _balance;
+  }
+
+  Future<double> _getBalanceOnce()
   async {
 
+    // 🚨 FIX (bug ile ile ya "muda" - sababu ya "$0 bila error"):
+    // awali hapa hapakuwa na uhakika wa kusubiri 'authorize'
+    // kuthibitika kabla ya kutuma ombi la "balance". Kama ombi
+    // linatumwa KABLA Deriv haijathibitisha akaunti (jambo
+    // linalowezekana SANA kwenye ombi la KWANZA la '/balance' mara
+    // baada ya server kuanza - sawa kabisa na bugs za
+    // 'getMarketPairs()'/'fetchHistoricalRange()' tulizozipata na
+    // kuzirekebisha awali), Deriv haijibu ipasavyo, 'completer'
+    // haikamiliki ndani ya sekunde 5, na function inarudi kwa
+    // '_balance' YA DEFAULT (0) KIMYA KIMYA - bila error yoyote
+    // inayoonekana. UI ilikuwa ikionyesha "$0" kihalali (si tatizo la
+    // UI) kwa sababu server YENYEWE ilikuwa ikirudisha 0 halisi.
+    //
+    // Sasa: tunasubiri (poll) hadi 'authorize' ithibitike (hadi
+    // sekunde 15) kabla ya kutuma ombi.
+    if (!_connected) {
+      await connect();
+    }
+
+    if (!_auth) {
+      const maxWait = Duration(seconds: 15);
+      const pollEvery = Duration(milliseconds: 200);
+      final deadline = DateTime.now().add(maxWait);
+
+      while (!_auth && DateTime.now().isBefore(deadline)) {
+        await Future.delayed(pollEvery);
+      }
+
+      if (!_auth) {
+        print(
+          "⚠️ getBalance(): authorize haijathibitika baada ya "
+          "${maxWait.inSeconds}s - balance inaweza kuwa si sahihi (0).",
+        );
+      }
+    }
 
     final completer =
         Completer<double>();
@@ -1956,11 +2342,27 @@ List<model.Candle> _aggregateCalendar(
 
     late StreamSubscription sub;
 
-
+    // 🔍 ONGEZO JIPYA (diagnostic ya kina zaidi - kwa vile diagnostic
+    // ya awali haikuwahi kuonekana kabisa, ikimaanisha 'msg_type ==
+    // "balance"' haikuwahi kutokea): tunachapisha SASA kila 'event'
+    // KAMILI inayofika kwenye stream wakati wa kusubiri jibu la
+    // balance - hii itatuonyesha WAZI kama Deriv inatuma KITU CHOCHOTE
+    // (hata kama si 'balance' - labda 'error', au 'msg_type' nyingine
+    // isiyotarajiwa), au kama HAKUNA event yoyote inayofika kabisa
+    // (ukimya kamili - ishara ya tatizo la muunganiko/WebSocket, si
+    // la Deriv API).
+    int eventCount = 0;
 
     sub =
         stream.listen(
           (event){
+
+            eventCount++;
+            print(
+              "🔍 getBalance() event #$eventCount: "
+              "msg_type=${event["msg_type"]} "
+              "${event["msg_type"] == "error" ? "| ERROR: ${event["error"]}" : ""}",
+            );
 
 
             if(event["msg_type"]=="balance"){
@@ -1969,7 +2371,19 @@ List<model.Candle> _aggregateCalendar(
               final b =
                   event["balance"];
 
-
+              // 🔍 ONGEZO JIPYA (diagnostic ya mwisho - hii ndiyo
+              // itatuonyesha HASA kilichoshindikana): tuligundua
+              // kwamba 'msg_type=="balance"' INAFIKA (event #1
+              // kwenye jaribio la mwisho), lakini print ya
+              // "💰 BALANCE (akaunti ya SASA/default)" HAIKUWAHI
+              // kuonekana - ikimaanisha 'b is Map' hapa chini ilikuwa
+              // FALSE. Hii inachapisha AINA HALISI na THAMANI HALISI
+              // ya 'event["balance"]' ili tuone HASA Deriv ilituma
+              // nini badala ya Map inayotarajiwa.
+              print(
+                "🔬 RAW event['balance']: aina=${b.runtimeType} "
+                "thamani=$b | RAW EVENT NZIMA: $event",
+              );
 
               if(b is Map){
 
@@ -1985,6 +2399,46 @@ List<model.Candle> _aggregateCalendar(
 
                   0;
 
+                // 🚨 ONGEZO JIPYA (diagnostic - kwa ombi la
+                // mtumiaji): Deriv HAIRUDISHI balance ya AKAUNTI ZOTE
+                // ulizonazo kwa default - inarudisha TU balance ya
+                // AKAUNTI MOJA iliyounganishwa na token hii mahususi
+                // (angalia 'loginid' hapa chini). Kama una akaunti
+                // NYINGI (Real, Demo, Wallets tofauti za "Options"
+                // dhidi ya "Multipliers/CFDs"), pesa yako HALISI
+                // inaweza kuwa kwenye akaunti TOFAUTI na hii - $0
+                // ingekuwa SAHIHI kihalali kwa akaunti hii mahususi,
+                // hata kama una pesa mahali pengine. Sasa tunachapisha
+                // AKAUNTI ZOTE zilizounganishwa (kutokana na
+                // "account":"all" hapa chini) ili tuone wazi kama
+                // kuna tofauti.
+                print(
+                  "💰 BALANCE (akaunti ya SASA/default): "
+                  "${b["balance"]} ${b["currency"]} "
+                  "(loginid: ${b["loginid"]})",
+                );
+
+                final accounts = b["accounts"];
+                if (accounts is Map) {
+                  print("💰 AKAUNTI ZOTE ZILIZOUNGANISHWA:");
+                  accounts.forEach((loginId, info) {
+                    if (info is Map) {
+                      print(
+                        "   $loginId : ${info["balance"]} "
+                        "${info["currency"]} "
+                        "(demo: ${info["demo_account"]}, "
+                        "type: ${info["type"]})",
+                      );
+                    }
+                  });
+                  print(
+                    "⚠️ Kama unaona akaunti YENYE PESA hapo juu "
+                    "isiyo sawa na loginid ya default (${b["loginid"]}) "
+                    "- hiyo ndiyo inayoshikilia fedha zako, si ile "
+                    "inayotumika sasa na token hii.",
+                  );
+                }
+
 
 
                 if(!completer.isCompleted){
@@ -1999,6 +2453,27 @@ List<model.Candle> _aggregateCalendar(
                 sub.cancel();
 
 
+              } else {
+
+                // FIX: 'b' si Map - jaribu kuisoma moja kwa moja kama
+                // namba (endapo Deriv ilituma thamani ghafi badala ya
+                // Map iliyotarajiwa), na kamilisha 'completer' HATA
+                // HIVYO badala ya kuiacha ikaishe muda bila sababu.
+                final directValue = double.tryParse(b.toString());
+
+                _balance = directValue ?? 0;
+
+                print(
+                  "⚠️ event['balance'] SI Map - jaribio la kuisoma "
+                  "moja kwa moja kama namba: $_balance",
+                );
+
+                if(!completer.isCompleted){
+                  completer.complete(_balance);
+                }
+
+                sub.cancel();
+
               }
 
 
@@ -2012,6 +2487,19 @@ List<model.Candle> _aggregateCalendar(
 
 
 
+    // FIX (jaribio la kuondoa 'account:all' kwa muda - diagnostic):
+    // tunataka kuthibitisha kama 'account:all' yenyewe ndiyo
+    // inayosababisha tatizo (baadhi ya token hazitumii vizuri na
+    // 'account:all'), au kama tatizo ni MUUNGANIKO kuwa na shughuli
+    // nyingi (subscriptions 92 x timeframes 4 zikiendelea kutuma
+    // 'ohlc' bila kukoma). Ombi limerahisishwa kwa 'balance:1' TU kwa
+    // sasa - tutaongeza 'account:all' tena baadaye ikiwa hii itafanya
+    // kazi.
+    print(
+      "📤 getBalance(): kutuma ombi la 'balance' sasa "
+      "(_connected=$_connected, _auth=$_auth)...",
+    );
+
     _send({
 
       "balance":1,
@@ -2020,13 +2508,39 @@ List<model.Candle> _aggregateCalendar(
 
 
 
+
     return completer.future.timeout(
 
-      const Duration(seconds:5),
+      // 🚨 FIX (chanzo halisi kimepatikana kwa uhakika kupitia
+      // diagnostic - angalia maelezo marefu kwenye maoni ya
+      // 'eventCount' hapo juu): SEKUNDE 5 hazikuwa za kutosha - sio
+      // kwa sababu Deriv inakataa ombi (hakuna 'error' kabisa
+      // ilizingatiwa kwenye majaribio - events zote zilizopokelewa
+      // wakati wa kusubiri zilikuwa 'candles'/'null', si 'balance'
+      // wala 'error'), bali kwa sababu wakati wa BOOTSTRAP (alama
+      // nyingi - 92 - zikipakia historia ya D1/H4/H1/M15 KWA WAKATI
+      // MMOJA), muunganiko mmoja wa WebSocket unashughulikia MAMIA ya
+      // ujumbe kwa zamu - ombi la "balance" linasubiri kwenye foleni
+      // hiyo hiyo, na majibu yake yanachukua ZAIDI ya sekunde 5
+      // kufika wakati wa msongamano huo. Sasa: sekunde 25 - muda wa
+      // kutosha hata wakati wa bootstrap yenye shughuli nyingi.
+      const Duration(seconds:25),
 
       onTimeout:(){
 
         sub.cancel();
+
+        final reason = eventCount == 0
+            ? "HAKUNA EVENT YOYOTE ilipokelewa - tatizo la muunganiko/WebSocket, si la Deriv API."
+            : "Kulikuwa na events $eventCount lakini hakuna iliyokuwa "
+              "msg_type==balance - uwezekano mkubwa: muunganiko "
+              "ulikuwa na shughuli nyingi (bootstrap/subscriptions "
+              "nyingi) wakati huo.";
+
+        print(
+          "⏱️ getBalance(): IMEISHA MUDA baada ya sekunde 25 - "
+          "events zilizopokelewa wakati huo: $eventCount. $reason",
+        );
 
         return _balance;
 
