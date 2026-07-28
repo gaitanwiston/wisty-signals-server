@@ -133,6 +133,19 @@ class PriceActionAnalysis {
   final bool bullishRejection;
   final bool bearishRejection;
 
+  // 🚨 ONGEZO JIPYA (kutoka "The Candlestick Trading Bible" - kwa
+  // ombi la mtumiaji): patterns tano MPYA zisizokuwepo awali. NOTE:
+  // kitabu chenyewe kinathibitisha "Hammer"="Pin Bar bullish",
+  // "Shooting Star"="Pin Bar bearish", "Harami"="Inside Bar" - hizo
+  // TAYARI zinapatikana hapo juu, hazikuongezwa tena (zingekuwa
+  // urudufu).
+  final bool dragonflyDoji; // Doji + mkia mrefu chini TU - bullish
+  final bool gravestoneDoji; // Doji + mkia mrefu juu TU - bearish
+  final bool morningStar; // Candles 3: bearish, ndogo, bullish (>midpoint ya 1) - bullish
+  final bool eveningStar; // Candles 3: bullish, ndogo, bearish (<midpoint ya 1) - bearish
+  final bool tweezersTop; // Candles 2: bullish+bearish, high zinazolingana - bearish
+  final bool tweezersBottom; // Candles 2: bearish+bullish, low zinazolingana - bullish
+
   const PriceActionAnalysis({
     required this.bullishEngulfing,
     required this.bearishEngulfing,
@@ -142,6 +155,12 @@ class PriceActionAnalysis {
     required this.doji,
     required this.bullishRejection,
     required this.bearishRejection,
+    this.dragonflyDoji = false,
+    this.gravestoneDoji = false,
+    this.morningStar = false,
+    this.eveningStar = false,
+    this.tweezersTop = false,
+    this.tweezersBottom = false,
   });
 }
 
@@ -811,11 +830,24 @@ bool debugMode = true;
     // deriv.subscribeCandles() yenyewe italisawazisha kwa internal
     // bookkeeping (map keys) inapohitajika, bila kuathiri jina
     // linalotumwa kuwasiliana na Deriv.
+    // 🚨 ONGEZO JIPYA (fix ya uwezekano wa "muunganiko kukatika chini
+    // ya mzigo mkubwa"): awali alama zote (mf. 92) zilikuwa
+    // zikitumiwa maombi YOTE (92 x TF 4 = maombi 368) KWA WAKATI
+    // MMOJA bila mapumziko yoyote - "burst" kubwa ambayo INAWEZEKANA
+    // kusababisha Deriv ku-rate-limit au kukata muunganiko wetu kwa
+    // muda mfupi (jambo linaloweza kueleza "AuthorizationRequired"
+    // isiyotarajiwa kwenye maombi mengine - kama 'balance' -
+    // yanayotumwa wakati huo huo, endapo reconnect ya kimya
+    // ilitokea). Sasa: mapumziko madogo (150ms) KATI YA ALAMA (si
+    // kati ya kila TF - bado ni haraka vya kutosha) yanapunguza
+    // "burst" hii kwa kiasi kikubwa.
     for (final p in pairs) {
       await deriv.subscribeCandles(p, tf: TF.h1);
       await deriv.subscribeCandles(p, tf: TF.h4);
       await deriv.subscribeCandles(p, tf: TF.d1);
       await deriv.subscribeCandles(p, tf: TF.w1);
+
+      await Future.delayed(const Duration(milliseconds: 150));
     }
 
     // ⚠️ FIX: wsStream compatibility (safe fallback)
@@ -1038,6 +1070,40 @@ bool debugMode = true;
     final w1Bias = _bias(w1);
     final d1Bias = _bias(d1);
 
+    // 🔍 ONGEZO JIPYA (kwa ombi la mtumiaji - "kwa nini BUY tu kwa
+    // wiki mbili?"): tunachapisha tarehe HALISI ya candle ya MWISHO
+    // ya W1/D1 - hii itatuonyesha WAZI kama data hii inasasishwa kweli
+    // (tarehe za hivi karibuni, ndani ya siku/wiki 1) au imekwama
+    // (stuck - tarehe za zamani sana, zisizolingana na "wiki mbili"
+    // za sasa).
+    if (w1.isNotEmpty) {
+      final lastW1 = DateTime.fromMillisecondsSinceEpoch(
+        w1.last.epoch * 1000,
+        isUtc: true,
+      );
+      final ageInDays = DateTime.now().toUtc().difference(lastW1).inDays;
+      _log(
+        "🔍 W1 CANDLE YA MWISHO: $lastW1 (umri: siku $ageInDays) - "
+        "${ageInDays > 10 ? '⚠️ INAWEZEKANA IMEKWAMA (stale)!' : 'inaonekana fresh'}",
+      );
+    } else {
+      _log("🔍 W1 CANDLES: TUPU KABISA (orodha ina urefu 0)!");
+    }
+
+    if (d1.isNotEmpty) {
+      final lastD1 = DateTime.fromMillisecondsSinceEpoch(
+        d1.last.epoch * 1000,
+        isUtc: true,
+      );
+      final ageInDays = DateTime.now().toUtc().difference(lastD1).inDays;
+      _log(
+        "🔍 D1 CANDLE YA MWISHO: $lastD1 (umri: siku $ageInDays) - "
+        "${ageInDays > 2 ? '⚠️ INAWEZEKANA IMEKWAMA (stale)!' : 'inaonekana fresh'}",
+      );
+    } else {
+      _log("🔍 D1 CANDLES: TUPU KABISA (orodha ina urefu 0)!");
+    }
+
     final trendAligned =
         (w1Bias == d1Bias) && w1Bias != MarketBias.none;
 _log("══════════════════════════════════════");
@@ -1206,11 +1272,47 @@ if (priceAction.doji) {
   sellScore.priceAction -= 5;
 }
 
+
+// ================= ONGEZO JIPYA: PATTERNS KUTOKA "THE CANDLESTICK
+// TRADING BIBLE" (kwa ombi la mtumiaji - kwenda sambamba na SMC/ICT
+// tuliyokuwa nayo tayari) =================
+
+if (priceAction.morningStar) {
+  buyScore.priceAction += 20;
+}
+
+if (priceAction.eveningStar) {
+  sellScore.priceAction += 20;
+}
+
+if (priceAction.dragonflyDoji) {
+  buyScore.priceAction += 15;
+}
+
+if (priceAction.gravestoneDoji) {
+  sellScore.priceAction += 15;
+}
+
+if (priceAction.tweezersBottom) {
+  buyScore.priceAction += 12;
+}
+
+if (priceAction.tweezersTop) {
+  sellScore.priceAction += 12;
+}
+
 _log(
     "Bull Engulf : ${priceAction.bullishEngulfing}");
 
 _log(
     "Bear Engulf : ${priceAction.bearishEngulfing}");
+
+_log("Dragonfly Doji (bullish) : ${priceAction.dragonflyDoji}");
+_log("Gravestone Doji (bearish) : ${priceAction.gravestoneDoji}");
+_log("Morning Star (bullish) : ${priceAction.morningStar}");
+_log("Evening Star (bearish) : ${priceAction.eveningStar}");
+_log("Tweezers Top (bearish) : ${priceAction.tweezersTop}");
+_log("Tweezers Bottom (bullish) : ${priceAction.tweezersBottom}");
 
 _log(
     "Bull PinBar : ${priceAction.bullishPinBar}");
@@ -1711,6 +1813,22 @@ if (isBuy || isSell) {
       : priceAction.bearishRejection) {
     conditionsMetList.add("H1 Rejection Candle");
   }
+  // ONGEZO JIPYA: patterns kutoka "The Candlestick Trading Bible".
+  if (dir ? priceAction.morningStar : priceAction.eveningStar) {
+    conditionsMetList.add(
+      dir ? "H1 Morning Star (candles 3)" : "H1 Evening Star (candles 3)",
+    );
+  }
+  if (dir ? priceAction.dragonflyDoji : priceAction.gravestoneDoji) {
+    conditionsMetList.add(
+      dir ? "H1 Dragonfly Doji" : "H1 Gravestone Doji",
+    );
+  }
+  if (dir ? priceAction.tweezersBottom : priceAction.tweezersTop) {
+    conditionsMetList.add(
+      dir ? "H1 Tweezers Bottom" : "H1 Tweezers Top",
+    );
+  }
   if (dir ? emaBullish : emaBearish) {
     conditionsMetList.add("EMA50/EMA200 Alignment");
   }
@@ -2092,6 +2210,13 @@ indicators: {
   "doji": priceAction.doji,
   "bullishRejection": priceAction.bullishRejection,
   "bearishRejection": priceAction.bearishRejection,
+  // ONGEZO JIPYA: patterns kutoka "The Candlestick Trading Bible".
+  "dragonflyDoji": priceAction.dragonflyDoji,
+  "gravestoneDoji": priceAction.gravestoneDoji,
+  "morningStar": priceAction.morningStar,
+  "eveningStar": priceAction.eveningStar,
+  "tweezersTop": priceAction.tweezersTop,
+  "tweezersBottom": priceAction.tweezersBottom,
 
   // 🚨 ONGEZO JIPYA (fix ya bug halisi - "data haifiki UI"): fields
   // hizi zote zilikuwa zikihesabiwa na kuwekwa kama TOP-LEVEL fields
@@ -2818,6 +2943,69 @@ PriceActionAnalysis _detectPriceAction(
       upper >
       (lower + body);
 
+  // ================= ONGEZO JIPYA: PATTERNS KUTOKA "THE CANDLESTICK
+  // TRADING BIBLE" =================
+
+  final dragonflyDoji =
+      doji &&
+      upper <= body * 0.5 &&
+      lower > (last.high - last.low) * 0.6;
+
+  final gravestoneDoji =
+      doji &&
+      lower <= body * 0.5 &&
+      upper > (last.high - last.low) * 0.6;
+
+  bool morningStar = false;
+  bool eveningStar = false;
+
+  if (candles.length >= 3) {
+    final c1 = candles[candles.length - 3];
+    final c2 = candles[candles.length - 2];
+    final c3 = candles[candles.length - 1];
+
+    final c1Body = (c1.close - c1.open).abs();
+    final c2Body = (c2.close - c2.open).abs();
+    final c1Midpoint = (c1.open + c1.close) / 2;
+
+    final c1Bearish = c1.close < c1.open;
+    final c2Small = c1Body > 0 && c2Body < c1Body * 0.5;
+    final c3Bullish = c3.close > c3.open;
+
+    morningStar =
+        c1Bearish &&
+        c2Small &&
+        c3Bullish &&
+        c3.close > c1Midpoint;
+
+    final c1Bullish = c1.close > c1.open;
+    final c3Bearish = c3.close < c3.open;
+
+    eveningStar =
+        c1Bullish &&
+        c2Small &&
+        c3Bearish &&
+        c3.close < c1Midpoint;
+  }
+
+  bool tweezersTop = false;
+  bool tweezersBottom = false;
+
+  if (candles.length >= 2) {
+    final rangeTolerance = (last.high - last.low) * 0.1;
+
+    final prevBullish = prev.close > prev.open;
+    final prevBearish = prev.close < prev.open;
+    final lastBullish = last.close > last.open;
+    final lastBearish = last.close < last.open;
+
+    final highsMatch = (last.high - prev.high).abs() <= rangeTolerance;
+    final lowsMatch = (last.low - prev.low).abs() <= rangeTolerance;
+
+    tweezersTop = prevBullish && lastBearish && highsMatch;
+    tweezersBottom = prevBearish && lastBullish && lowsMatch;
+  }
+
   return PriceActionAnalysis(
     bullishEngulfing: bullishEngulf,
     bearishEngulfing: bearishEngulf,
@@ -2827,6 +3015,12 @@ PriceActionAnalysis _detectPriceAction(
     doji: doji,
     bullishRejection: bullishReject,
     bearishRejection: bearishReject,
+    dragonflyDoji: dragonflyDoji,
+    gravestoneDoji: gravestoneDoji,
+    morningStar: morningStar,
+    eveningStar: eveningStar,
+    tweezersTop: tweezersTop,
+    tweezersBottom: tweezersBottom,
   );
 }
 
