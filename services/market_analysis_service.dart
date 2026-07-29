@@ -916,6 +916,17 @@ bool debugMode = true;
         }
 
         _log("✅ PERIODIC ANALYSIS COMPLETE");
+
+        // 🚨 ONGEZO JIPYA (hoja E - kwa ombi la mtumiaji): kazi hii
+        // ilikuwepo TAYARI kwenye code (imejengwa awali) lakini
+        // HAIKUWAHI KUITWA mahali popote - counters (_w1BiasCount,
+        // _decisionCount) zilikuwa zikijazwa kimya kimya bila kuwahi
+        // kuonekana. Sasa inachapishwa KILA mzunguko wa dakika 5,
+        // ikitupa uwiano HALISI wa W1/D1 bias dhidi ya maamuzi ya
+        // mwisho - hii ndiyo itakayothibitisha (au kukanusha) kama
+        // "BUY tu" ni upendeleo wa data halisi ya soko, au tatizo la
+        // mfumo.
+        printSignalFrequencyStats();
       },
     );
   }
@@ -1145,6 +1156,39 @@ _log(
 "H4 SELL SCORE:${h4Analysis.sellScore}"
 );
 
+// 🚨🚨🚨 ONGEZO JIPYA (hoja B - kwa ombi la mtumiaji): "No Trade
+// Zone" - usitoe signal ya BUY kama bei iko karibu SANA (chini ya
+// 1 ATR) na resistance (structureSwingHigh) - hatari ya kukwama
+// papo hapo. Vivyo hivyo, usitoe SELL kama bei iko karibu na
+// support (structureSwingLow). Hii inazuia "kuchoma account" kwenye
+// soko linalozunguka (ranging) karibu na kingo za range - tatizo
+// lililoainishwa wazi kwenye uchambuzi wa nje.
+final currentPrice = h1.isNotEmpty ? h1.last.close : 0.0;
+final ntzAtr = _atr(h1);
+
+final distanceToResistance =
+    (h4Analysis.structureSwingHigh - currentPrice).abs();
+final distanceToSupport =
+    (currentPrice - h4Analysis.structureSwingLow).abs();
+
+final noTradeZoneBuy =
+    ntzAtr > 0 &&
+    h4Analysis.structureSwingHigh > 0 &&
+    distanceToResistance < ntzAtr;
+
+final noTradeZoneSell =
+    ntzAtr > 0 &&
+    h4Analysis.structureSwingLow > 0 &&
+    distanceToSupport < ntzAtr;
+
+_log(
+  "NO TRADE ZONE: BUY-blocked=$noTradeZoneBuy "
+  "(dist-to-resistance=${distanceToResistance.toStringAsFixed(5)} "
+  "vs ATR=${ntzAtr.toStringAsFixed(5)}) | "
+  "SELL-blocked=$noTradeZoneSell "
+  "(dist-to-support=${distanceToSupport.toStringAsFixed(5)})",
+);
+
     final last5 = h1.sublist(max(0, h1.length - 5));
 
     int bull = 0, bear = 0;
@@ -1173,55 +1217,73 @@ _log(
 final sellScore = WeightedScore();
 
     // ================= HIGHER TIMEFRAME =================
-
+    // 🚨🚨🚨 ONGEZO JIPYA (hoja A - kwa ombi la mtumiaji, baada ya
+    // uchambuzi wa nje kuthibitisha tatizo halisi): uzito wa Trend
+    // UMEPUNGUZWA sana (35 -> 12). AWALI: Trend(35)+Structure(30)=65
+    // pekee zingeweza kusukuma uamuzi BILA uthibitisho wowote wa
+    // liquidity sweep au order block - jambo linalofanya mfumo kuwa
+    // "trend continuation detector" badala ya "institutional
+    // entry engine" ya kweli. SASA: Trend ni MUKTADHA (context/filter)
+    // yenye uzito mdogo, si "msukumo mkuu" wa uamuzi.
 if (trendAligned &&
     w1Bias == MarketBias.buy) {
-  buyScore.trend = 35;
+  buyScore.trend = 12;
 }
 
 if (trendAligned &&
     w1Bias == MarketBias.sell) {
-  sellScore.trend = 35;
+  sellScore.trend = 12;
 }
 
 // ================= H4 STRUCTURE =================
+// ONGEZO JIPYA (hoja A): 30 -> 18 - bado muhimu (BOS/CHOCH ni
+// ishara halali), lakini si tena ya pili kwa ukubwa peke yake
+// inayoweza (pamoja na Trend TU) kusukuma uamuzi bila liquidity/OB.
 
 if (h4Analysis.bullish) {
-  buyScore.structure = 30;
+  buyScore.structure = 18;
 }
 
 if (h4Analysis.bearish) {
-  sellScore.structure = 30;
+  sellScore.structure = 18;
 }
 
-// ================= H4 LIQUIDITY (FIX: ilikuwa haijaunganishwa) =================
+// ================= H4 LIQUIDITY =================
+// ONGEZO JIPYA (hoja A): 15 -> 25 - Liquidity sweep ni ishara ya
+// KUAMINIKA ZAIDI kwa "smart money" entry (institutional footprint)
+// kuliko trend ya jumla - sasa ina uzito UNAOSTAHILI.
 
 if (h4Analysis.sweepLow) {
-  buyScore.liquidity = 15;
+  buyScore.liquidity = 25;
 }
 
 if (h4Analysis.sweepHigh) {
-  sellScore.liquidity = 15;
+  sellScore.liquidity = 25;
 }
 
-// ================= H4 ORDER BLOCK (FIX: ilikuwa haijaunganishwa) =================
+// ================= H4 ORDER BLOCK =================
+// ONGEZO JIPYA (hoja A): 15 -> 25 - Order Block (msingi wa SMC/ICT)
+// sasa ina uzito sawa na Liquidity - hizi mbili kwa pamoja (50)
+// zinapaswa kuwa MSINGI wa entry, si Trend/Structure.
 
 if (h4Analysis.bullishOB) {
-  buyScore.orderBlock = 15;
+  buyScore.orderBlock = 25;
 }
 
 if (h4Analysis.bearishOB) {
-  sellScore.orderBlock = 15;
+  sellScore.orderBlock = 25;
 }
 
 // ================= H1 MOMENTUM =================
+// ONGEZO JIPYA (hoja A): 20 -> 15 - kupunguzwa kidogo kuendana na
+// uwiano mpya wa jumla.
 
 if (h1Buy) {
-  buyScore.momentum = 20;
+  buyScore.momentum = 15;
 }
 
 if (h1Sell) {
-  sellScore.momentum = 20;
+  sellScore.momentum = 15;
 }
 
 
@@ -1361,6 +1423,33 @@ if (emaDataSufficient) {
   emaBearish = lastClose < lastEma50 && lastEma50 < lastEma200;
 }
 
+// 🚨🚨🚨 ONGEZO JIPYA (hoja D - kwa ombi la mtumiaji): "Market Regime
+// Filter" - mfumo haukuwa ukijua kama soko liko "trending" au
+// "ranging" (linazunguka). Kwenye soko la ranging, mikakati ya
+// "trend following" (mf. RSI veto softening kwa confluence>=4)
+// inakuwa HATARI - ndiyo maana ilielezwa wazi kwenye uchambuzi wa
+// nje: "Bei ikipanda kidogo: BUY. Ikishuka: SELL. Inakuwa inachoma
+// account."
+//
+// Ishara rahisi ya "ranging": EMA50 na EMA200 ziko KARIBU SANA
+// (chini ya asilimia ndogo ya bei) - mwelekeo wa muda wa kati
+// haujakolea. Kwenye hali hii, tunazima "buyStrongTrendOverride"/
+// "sellStrongTrendOverride" (softening ya RSI veto) - override hiyo
+// ilikuwa imeundwa MAKUSUDI kwa ajili ya TREND IMARA, si soko
+// linalozunguka.
+bool isRanging = false;
+
+if (emaDataSufficient && h1.last.close > 0) {
+  final emaSpreadPercent =
+      (ema50Series.last - ema200Series.last).abs() / h1.last.close;
+
+  // Chini ya 0.1% ya bei - EMA50/200 ziko karibu mno, ishara ya
+  // ranging/consolidation, si trend imara.
+  isRanging = emaSpreadPercent < 0.001;
+}
+
+_log("MARKET REGIME: ${isRanging ? 'RANGING (softening ya RSI veto imezimwa)' : 'TRENDING'}");
+
 if (emaBullish) {
   buyScore.ema = 10;
 }
@@ -1494,6 +1583,20 @@ final decision =
       confluence: confluence,
       rsiOverbought: rsiOverbought,
       rsiOversold: rsiOversold,
+      // ONGEZO JIPYA (hoja C - kwa ombi la mtumiaji): buyScore/
+      // sellScore zinapitishwa ili _makeDecision iweze kulazimisha
+      // uthibitisho wa Liquidity AU OrderBlock (SMC halisi), si
+      // Trend/Structure pekee - angalia maelezo marefu ndani ya
+      // _makeDecision().
+      buyLiquidity: buyScore.liquidity,
+      buyOrderBlock: buyScore.orderBlock,
+      sellLiquidity: sellScore.liquidity,
+      sellOrderBlock: sellScore.orderBlock,
+      // ONGEZO JIPYA (hoja B): No Trade Zone flags.
+      noTradeZoneBuy: noTradeZoneBuy,
+      noTradeZoneSell: noTradeZoneSell,
+      // ONGEZO JIPYA (hoja D): Market Regime Filter.
+      isRanging: isRanging,
     );
 
 // ONGEZO JIPYA: hesabu HALISI ya uamuzi wa mwisho (wait/buy/
@@ -1870,6 +1973,38 @@ if (!decision.allowed) {
     reasonsFailedList.add(
       "RSI Oversold na confluence haina nguvu ya kutosha (<4) "
       "kuruhusu 'strong trend override'",
+    );
+  }
+  // ONGEZO JIPYA (hoja C, B, D - kwa ombi la mtumiaji): sababu mpya
+  // za kuzuia trade.
+  if (buy > sell && buyScore.liquidity == 0 && buyScore.orderBlock == 0) {
+    reasonsFailedList.add(
+      "Hakuna uthibitisho wa 'smart money' (Liquidity sweep AU Order "
+      "Block) kwa upande wa BUY - Trend/Structure pekee hazitoshi",
+    );
+  }
+  if (sell > buy && sellScore.liquidity == 0 && sellScore.orderBlock == 0) {
+    reasonsFailedList.add(
+      "Hakuna uthibitisho wa 'smart money' (Liquidity sweep AU Order "
+      "Block) kwa upande wa SELL - Trend/Structure pekee hazitoshi",
+    );
+  }
+  if (buy > sell && noTradeZoneBuy) {
+    reasonsFailedList.add(
+      "BUY imezuiwa - bei iko karibu mno (chini ya ATR 1) na "
+      "resistance (No Trade Zone)",
+    );
+  }
+  if (sell > buy && noTradeZoneSell) {
+    reasonsFailedList.add(
+      "SELL imezuiwa - bei iko karibu mno (chini ya ATR 1) na "
+      "support (No Trade Zone)",
+    );
+  }
+  if (isRanging) {
+    reasonsFailedList.add(
+      "Soko liko 'ranging' (EMA50/200 karibu sana) - softening ya "
+      "RSI veto imezimwa kwa usalama",
     );
   }
   if (reasonsFailedList.isEmpty) {
@@ -3228,7 +3363,45 @@ required bool rsiOverbought,
 
 required bool rsiOversold,
 
+// 🚨🚨🚨 ONGEZO JIPYA (hoja C - kwa ombi la mtumiaji, baada ya
+// uchambuzi wa nje kuthibitisha tatizo halisi): AWALI, Trend+Structure
+// PEKEE (kabla ya hoja A: pointi 65/100) vingeweza kusukuma uamuzi
+// KABISA bila uthibitisho wowote wa "smart money" (liquidity
+// sweep/order block). Hii ilifanya mfumo kuwa "trend continuation
+// detector" - Trend Bias (W1/D1) na Entry Signal (wakati HALISI wa
+// kuingia) hazikuwa zimetenganishwa. SASA: Trend Bias ni MUKTADHA TU
+// (lazima uwepo - filter), LAKINI Entry HAIRUHUSIWI ('allowed=true')
+// isipokuwa KUNA uthibitisho MOJA ANGALAU wa "smart money" (Liquidity
+// sweep AU Order Block) - hizi ndizo ishara za MAHALI PENYE thamani
+// (location-aware), si tu MWELEKEO (direction-only) kama Trend
+// pekee.
+required double buyLiquidity,
+
+required double buyOrderBlock,
+
+required double sellLiquidity,
+
+required double sellOrderBlock,
+
+required bool noTradeZoneBuy,
+
+required bool noTradeZoneSell,
+
+// ONGEZO JIPYA (hoja D - kwa ombi la mtumiaji): "Market Regime
+// Filter" - kama 'true' (soko linazunguka/ranging), softening ya
+// RSI veto (buyStrongTrendOverride/sellStrongTrendOverride)
+// INAZIMWA - override hiyo ni hatari kwenye ranging market.
+required bool isRanging,
+
 }) {
+
+// ONGEZO JIPYA (hoja C): uthibitisho wa "smart money" - angalau
+// MOJA kati ya Liquidity sweep au Order Block lazima iwepo kwa
+// upande husika, vinginevyo Trend/Structure PEKEE hazitoshi kufungua
+// trade - "tafuta BUY setup" (kusubiri location nzuri), si "BUY NOW"
+// kiotomatiki mara W1/D1 ikiwa bullish.
+final buySmartMoneyConfirmed = buyLiquidity > 0 || buyOrderBlock > 0;
+final sellSmartMoneyConfirmed = sellLiquidity > 0 || sellOrderBlock > 0;
 
 
 // FIX: awali hapa palikuwa na ukaguzi wa 'confluence.aligned' (ONE
@@ -3257,8 +3430,8 @@ required bool rsiOversold,
 // Kwenye hali dhaifu zaidi (confirmations 3), veto inabaki kali kama
 // awali - kwa sababu hapo hatuna uthibitisho wa kutosha kujua kama ni
 // trend ya kweli au ni "overextension" hatari.
-final buyStrongTrendOverride = confluence.buyConfirmations >= 4;
-final sellStrongTrendOverride = confluence.sellConfirmations >= 4;
+final buyStrongTrendOverride = confluence.buyConfirmations >= 4 && !isRanging;
+final sellStrongTrendOverride = confluence.sellConfirmations >= 4 && !isRanging;
 
 if(!confidence.valid){
 
@@ -3278,6 +3451,8 @@ if(
 buy > sell &&
 h4.bullish &&
 confluence.buyAligned &&
+buySmartMoneyConfirmed &&
+!noTradeZoneBuy &&
 (!rsiOverbought || buyStrongTrendOverride)
 ){
 
@@ -3315,6 +3490,8 @@ if(
 sell > buy &&
 h4.bearish &&
 confluence.sellAligned &&
+sellSmartMoneyConfirmed &&
+!noTradeZoneSell &&
 (!rsiOversold || sellStrongTrendOverride)
 ){
 
