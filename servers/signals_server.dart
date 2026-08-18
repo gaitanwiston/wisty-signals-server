@@ -203,14 +203,27 @@ void _handleClient(WebSocketChannel socket, dynamic msg) {
         return;
       }
 
-      if (!derivService.isReady(resolved)) {
-        _safeSend(socket, {
-          "type": "error",
-          "message": "Alama '$resolved' bado haiko tayari (data haitoshi bado).",
-        });
-        return;
-      }
-
+      // 🚨🚨🚨 FIX YA BUG HALISI (kwa ombi la mtumiaji - "0% kila
+      // mahali milele, hata baada ya dakika 5+"): AWALI hapa kulikuwa
+      // na 'if (!derivService.isReady(resolved)) { ...kataa... }' -
+      // kama alama haikuwa "tayari" (candles za kutosha) KWA WAKATI
+      // HUSISO WA USAJILI, ombi lilikataliwa na ujumbe wa "error" -
+      // LAKINI 'api_service.dart' (Flutter client) HAIKUWAHI
+      // KUSHUGHULIKIA ujumbe wa aina "error" KABISA (haujaribu tena
+      // kiotomatiki) - client alibaki "amejisajili" kwa mtazamo wake,
+      // lakini kihalisia HAKUWAHI kuongezwa kwenye '_clients[resolved]'
+      // - HAKUWAHI KUPOKEA BROADCAST YOYOTE kwa alama hiyo kwa kikao
+      // (session) kizima, hata Server 1 ikiwa tayari BAADAYE. Kama
+      // Server 1 na app zilianza karibu wakati mmoja (kawaida sana -
+      // mtumiaji anafungua app mara Server 1 ikianzishwa upya), ALAMA
+      // NYINGI/ZOTE zingekuwa "hazijawa tayari" wakati huo, na kikao
+      // kizima kingebaki "0% milele" - kikithibitishwa na majaribio.
+      //
+      // Sasa: usajili UNAKUBALIWA KILA WAKATI (bila kujali 'isReady')
+      // - hii ni SALAMA KABISA: broadcasts ('_broadcastSignal') tayari
+      // hazitumwi mpaka '_run()' ikamilishe uchambuzi WA KWANZA
+      // HALISI kwa alama hiyo - kizuizi cha 'isReady' hapa kilikuwa
+      // hakina maana (redundant) na kilisababisha hasara halisi.
       _clients.putIfAbsent(resolved, () => []);
       if (!_clients[resolved]!.contains(socket)) {
         _clients[resolved]!.add(socket);
