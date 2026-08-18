@@ -40,6 +40,13 @@ class StructureAnalysis {
   final double swingHigh;
   final double swingLow;
 
+  // ONGEZO JIPYA (kwa ombi la mtumiaji - Chart Patterns kutoka
+  // "TOP_DOWN.docx"): swing points za hivi karibuni (bei tu, si
+  // index) - zinatumika na _detectChartPatterns() kutambua Double
+  // Top/Bottom na Head & Shoulders.
+  final List<double> recentSwingHighs;
+  final List<double> recentSwingLows;
+
   const StructureAnalysis({
     required this.bosUp,
     required this.bosDown,
@@ -47,6 +54,8 @@ class StructureAnalysis {
     required this.chochDown,
     required this.swingHigh,
     required this.swingLow,
+    this.recentSwingHighs = const [],
+    this.recentSwingLows = const [],
   });
 }
 
@@ -559,6 +568,164 @@ class BacktestResult {
     return buf.toString();
   }
 }
+
+// =====================================================================
+// ONGEZO JIPYA (kutoka TOP_DOWN.docx - kwa ombi la mtumiaji): CHART
+// PATTERNS (Double Top/Bottom, Head & Shoulders) - hizi ni patterns
+// "kubwa" zinazoundwa na swing points NYINGI (si candle 1-3 tu kama
+// candlestick patterns) - zinaonekana kwenye D1 (muktadha wa "Major"
+// kama hati ilivyoeleza), zikitoa ishara imara ZAIDI ya mabadiliko ya
+// mwelekeo mkubwa kabisa.
+// =====================================================================
+
+class ChartPatternAnalysis {
+  final bool doubleTop;
+  final bool doubleBottom;
+  final bool headAndShoulders; // bearish (reversal ya juu kwenda chini)
+  final bool inverseHeadAndShoulders; // bullish (reversal ya chini kwenda juu)
+
+  const ChartPatternAnalysis({
+    this.doubleTop = false,
+    this.doubleBottom = false,
+    this.headAndShoulders = false,
+    this.inverseHeadAndShoulders = false,
+  });
+}
+
+ChartPatternAnalysis _detectChartPatterns(
+  StructureAnalysis structure,
+  double currentPrice,
+) {
+  final highs = structure.recentSwingHighs;
+  final lows = structure.recentSwingLows;
+
+  bool doubleTop = false;
+  bool doubleBottom = false;
+  bool headAndShoulders = false;
+  bool inverseHeadAndShoulders = false;
+
+  // Double Top: swing highs mbili za MWISHO zikiwa karibu sawa (tofauti
+  // <0.3% ya bei) - "neckline" ni swing low kati yao - pattern
+  // "inathibitika" mara bei ya SASA ikivunja chini ya neckline hiyo.
+  if (highs.length >= 2 && lows.isNotEmpty) {
+    final h1 = highs[highs.length - 2];
+    final h2 = highs[highs.length - 1];
+    final avgHigh = (h1 + h2) / 2;
+
+    if (avgHigh > 0) {
+      final diff = (h1 - h2).abs() / avgHigh;
+
+      if (diff < 0.003) {
+        final neckline = lows.last;
+        if (currentPrice < neckline) {
+          doubleTop = true;
+        }
+      }
+    }
+  }
+
+  // Double Bottom: kioo (mirror) cha Double Top.
+  if (lows.length >= 2 && highs.isNotEmpty) {
+    final l1 = lows[lows.length - 2];
+    final l2 = lows[lows.length - 1];
+    final avgLow = (l1 + l2) / 2;
+
+    if (avgLow > 0) {
+      final diff = (l1 - l2).abs() / avgLow;
+
+      if (diff < 0.003) {
+        final neckline = highs.last;
+        if (currentPrice > neckline) {
+          doubleBottom = true;
+        }
+      }
+    }
+  }
+
+  // Head & Shoulders: swing highs 3 za mwisho - "head" (ya kati) ndiyo
+  // ya juu zaidi, "shoulders" (kushoto/kulia) zinakaribiana kwa urefu
+  // (<1% tofauti) - pattern inathibitika mara bei ikivunja chini ya
+  // "neckline" (swing low ya karibuni).
+  if (highs.length >= 3) {
+    final leftShoulder = highs[highs.length - 3];
+    final head = highs[highs.length - 2];
+    final rightShoulder = highs[highs.length - 1];
+
+    if (head > 0) {
+      final shoulderDiff = (leftShoulder - rightShoulder).abs() / head;
+
+      if (head > leftShoulder &&
+          head > rightShoulder &&
+          shoulderDiff < 0.01) {
+        final neckline = lows.isNotEmpty ? lows.last : 0.0;
+
+        if (neckline > 0 && currentPrice < neckline) {
+          headAndShoulders = true;
+        }
+      }
+    }
+  }
+
+  // Inverse Head & Shoulders: kioo (mirror).
+  if (lows.length >= 3) {
+    final leftShoulder = lows[lows.length - 3];
+    final head = lows[lows.length - 2];
+    final rightShoulder = lows[lows.length - 1];
+
+    if (head > 0) {
+      final shoulderDiff = (leftShoulder - rightShoulder).abs() / head;
+
+      if (head < leftShoulder &&
+          head < rightShoulder &&
+          shoulderDiff < 0.01) {
+        final neckline = highs.isNotEmpty ? highs.last : 0.0;
+
+        if (neckline > 0 && currentPrice > neckline) {
+          inverseHeadAndShoulders = true;
+        }
+      }
+    }
+  }
+
+  return ChartPatternAnalysis(
+    doubleTop: doubleTop,
+    doubleBottom: doubleBottom,
+    headAndShoulders: headAndShoulders,
+    inverseHeadAndShoulders: inverseHeadAndShoulders,
+  );
+}
+
+// =====================================================================
+// ONGEZO JIPYA (kutoka TOP_DOWN.docx - "Fibonacci in conjunction with
+// any strategy" kwa PULLBACK entry): tunachunguza kama bei ya SASA
+// iko ndani ya "eneo la dhahabu" la Fibonacci retracement (38.2% -
+// 78.6%) kati ya swingLow na swingHigh za structure - eneo hili ndilo
+// wafanyabiashara wengi wa SMC/ICT wanalotumia kutafuta PULLBACK
+// ENTRY (kuingia wakati bei inaporudi nyuma kidogo ndani ya trend,
+// si kuingia katikati ya "impulse move").
+// =====================================================================
+
+bool _inFibonacciZone({
+  required double currentPrice,
+  required double swingHigh,
+  required double swingLow,
+  required bool forBuy,
+}) {
+  final range = swingHigh - swingLow;
+
+  if (range <= 0) return false;
+
+  if (forBuy) {
+    // Uptrend: pullback inapimwa kutoka swingHigh kurudi chini.
+    final retracement = (swingHigh - currentPrice) / range;
+    return retracement >= 0.382 && retracement <= 0.786;
+  } else {
+    // Downtrend: pullback inapimwa kutoka swingLow kurudi juu.
+    final retracement = (currentPrice - swingLow) / range;
+    return retracement >= 0.382 && retracement <= 0.786;
+  }
+}
+
 
 class MarketAnalysisService {
   MarketAnalysisService._internal();
@@ -1131,6 +1298,60 @@ _log("════════════════════════�
 final h4Analysis =
     _analyzeH4(h4);
 
+// 🚨🚨🚨 ONGEZO JIPYA (kutoka video za "Market Structure Trading
+// Mastery" - kwa ombi la mtumiaji): "Internal vs External BoS/CHoCH"
+// (eBoS/eCHoCH dhidi ya iBoS/iCHoCH) - External (H4, hapo juu) ni
+// muundo wa MUDA MREFU (unaodumu), Internal (H1, hapa chini) ni
+// muundo wa MUDA MFUPI - unaonyesha "pullback" ndani ya trend kubwa
+// ya External. Hii inaruhusu ENTRY YENYE USAHIHI ZAIDI: hata kama
+// External (H4) ni BUY imara, Internal (H1) CHoCH-down ikifuatiwa na
+// Internal BOS-up upya inaonyesha WAZI kwamba pullback imeisha na
+// trend kubwa inarudi kuendelea - wakati mzuri zaidi wa KUINGIA
+// kuliko kuingia katikati ya "impulse move" bila uthibitisho wowote
+// wa muda mfupi.
+final internalStructure = _detectStructure(h1);
+
+_log("INTERNAL (H1) BOS UP:${internalStructure.bosUp}");
+_log("INTERNAL (H1) BOS DOWN:${internalStructure.bosDown}");
+_log("INTERNAL (H1) CHOCH UP:${internalStructure.chochUp}");
+_log("INTERNAL (H1) CHOCH DOWN:${internalStructure.chochDown}");
+
+// ONGEZO JIPYA (kutoka TOP_DOWN.docx - "Major" chart patterns kwenye
+// Daily/Weekly): tunatumia D1 structure (si H4/H1) kwa Chart Patterns
+// - hizi zinahitaji "muda mrefu kuunda" ndiyo maana ni za maana zaidi
+// (kama hati ilivyoeleza: "the longer it takes to form, the more
+// significant it will likely play out").
+final d1Structure = _detectStructure(d1);
+final currentPrice = h1.isNotEmpty ? h1.last.close : 0.0;
+final chartPatterns = _detectChartPatterns(d1Structure, currentPrice);
+
+_log(
+  "CHART PATTERNS (D1): DoubleTop=${chartPatterns.doubleTop} "
+  "DoubleBottom=${chartPatterns.doubleBottom} "
+  "H&S=${chartPatterns.headAndShoulders} "
+  "InverseH&S=${chartPatterns.inverseHeadAndShoulders}",
+);
+
+// ONGEZO JIPYA (kutoka TOP_DOWN.docx - Fibonacci kwa pullback entry):
+// tunatumia H4 swingHigh/swingLow (structure iliyopo tayari kwenye
+// h4Analysis, angalia chini) kupima kama bei ya SASA iko ndani ya
+// "eneo la dhahabu" (38.2%-78.6%) - eneo bora zaidi la kuingia
+// (pullback), si katikati ya "impulse move".
+final buyInFibZone = _inFibonacciZone(
+  currentPrice: currentPrice,
+  swingHigh: h4Analysis.structureSwingHigh,
+  swingLow: h4Analysis.structureSwingLow,
+  forBuy: true,
+);
+
+final sellInFibZone = _inFibonacciZone(
+  currentPrice: currentPrice,
+  swingHigh: h4Analysis.structureSwingHigh,
+  swingLow: h4Analysis.structureSwingLow,
+  forBuy: false,
+);
+
+_log("FIBONACCI ZONE (38.2%-78.6%): BUY=$buyInFibZone SELL=$sellInFibZone");
 
 _log(
 "H4 BOS UP:${h4Analysis.bosUp}"
@@ -1163,7 +1384,9 @@ _log(
 // support (structureSwingLow). Hii inazuia "kuchoma account" kwenye
 // soko linalozunguka (ranging) karibu na kingo za range - tatizo
 // lililoainishwa wazi kwenye uchambuzi wa nje.
-final currentPrice = h1.isNotEmpty ? h1.last.close : 0.0;
+// FIX: 'currentPrice' TAYARI imetangazwa hapo juu (Chart Patterns) -
+// tunaitumia hiyo hiyo, si kuitangaza upya (ilikuwa ikisababisha
+// hitilafu ya "already declared in this scope").
 final ntzAtr = _atr(h1);
 
 final distanceToResistance =
@@ -1361,6 +1584,30 @@ if (priceAction.tweezersBottom) {
 
 if (priceAction.tweezersTop) {
   sellScore.priceAction += 12;
+}
+
+// ONGEZO JIPYA (kutoka TOP_DOWN.docx - Chart Patterns kwenye D1,
+// "Major" - uzito mkubwa zaidi kuliko candlestick patterns za H1,
+// kwa sababu zinachukua muda mrefu ZAIDI kuunda - "the longer it
+// takes to form, the more significant it will likely play out").
+if (chartPatterns.doubleBottom || chartPatterns.inverseHeadAndShoulders) {
+  buyScore.priceAction += 25;
+}
+
+if (chartPatterns.doubleTop || chartPatterns.headAndShoulders) {
+  sellScore.priceAction += 25;
+}
+
+// ONGEZO JIPYA (kutoka TOP_DOWN.docx - Fibonacci "golden zone" kwa
+// pullback entry - bonus ya ziada, si sehemu kuu ya score, kwa
+// kuwa ni "confirmation ya wakati" (timing), si "smart money"
+// confirmation kamili kama Liquidity/OrderBlock/Internal BOS).
+if (buyInFibZone) {
+  buyScore.priceAction += 10;
+}
+
+if (sellInFibZone) {
+  sellScore.priceAction += 10;
 }
 
 _log(
@@ -1597,6 +1844,9 @@ final decision =
       noTradeZoneSell: noTradeZoneSell,
       // ONGEZO JIPYA (hoja D): Market Regime Filter.
       isRanging: isRanging,
+      // ONGEZO JIPYA (kutoka video - "Internal vs External BOS").
+      internalBosUp: internalStructure.bosUp,
+      internalBosDown: internalStructure.bosDown,
     );
 
 // ONGEZO JIPYA: hesabu HALISI ya uamuzi wa mwisho (wait/buy/
@@ -1767,6 +2017,19 @@ _log("════════════════════════�
     // si nafasi ya kudhania iliyotenganishwa na soko.
     double stopLossFinal;
 
+    // 🚨🚨🚨 ONGEZO JIPYA (kwa ombi la mtumiaji - "trades.dart iendane
+    // na uchambuzi wetu mpya"): SL sasa inazingatia PIA Internal (H1)
+    // structure (iliyoongezwa leo), si H4 pekee. Kwa kuwa entries
+    // sasa zinathibitishwa kwa usahihi zaidi (kupitia Internal BOS -
+    // pullback imeisha - au Fibonacci Golden Zone), SL inaweza kuwa
+    // KARIBU ZAIDI na entry (bado ndani ya muundo halali) bila
+    // kupoteza usalama - hii inaboresha R:R (uwiano wa hatari kwa
+    // faida) moja kwa moja, kwa sababu TP (1:3) inatokana na umbali
+    // wa SL: SL ndogo zaidi = TP karibu zaidi = uwezekano mkubwa
+    // zaidi wa kufikiwa kabla ya bei kugeuka. Tunachagua SL "IMARA
+    // ZAIDI" (tighter, karibu zaidi na entry) kati ya H4 na Internal
+    // (H1) - MRADI zote mbili ni HALALI (ndani ya mipaka ya usalama
+    // ile ile: >0, upande sahihi, <=5xATR).
     if (isBuy) {
       double buyLevel = h4Analysis.structureSwingLow;
 
@@ -1777,19 +2040,34 @@ _log("════════════════════════�
       // Buffer ndogo (0.2xATR) chini ya kiwango cha muundo - kanuni
       // ya kawaida ya kuepuka "stop hunting" karibu na viwango
       // dhahiri ambavyo wafanyabiashara wengine wanaweka SL zao.
-      final structureSL = buyLevel - (safeAtr * 0.2);
-      final structureDistance = entry - structureSL;
+      final h4StructureSL = buyLevel - (safeAtr * 0.2);
+      final h4Distance = entry - h4StructureSL;
 
-      // Usalama: SL ya kimuundo LAZIMA iwe chini ya entry (halali kwa
-      // BUY), na isiwe mbali mno (>5xATR - ishara ya swing isiyofaa
-      // kutumika, mf. data finyu au swing ya zamani mno) wala karibu
-      // mno (<=0 - data batili). Nje ya mipaka hii, rudi kwenye ATR
-      // ya kawaida (fallback salama).
-      if (buyLevel > 0 &&
-          structureSL < entry &&
-          structureDistance > 0 &&
-          structureDistance <= safeAtr * 5) {
-        stopLossFinal = structureSL;
+      final h4Valid = buyLevel > 0 &&
+          h4StructureSL < entry &&
+          h4Distance > 0 &&
+          h4Distance <= safeAtr * 5;
+
+      // ONGEZO JIPYA: internal (H1) swingLow - kiwango cha muundo wa
+      // MUDA MFUPI, mara nyingi KARIBU ZAIDI na entry kuliko H4.
+      final internalLevel = internalStructure.swingLow;
+      final internalStructureSL = internalLevel - (safeAtr * 0.2);
+      final internalDistance = entry - internalStructureSL;
+
+      final internalValid = internalLevel > 0 &&
+          internalStructureSL < entry &&
+          internalDistance > 0 &&
+          internalDistance <= safeAtr * 5;
+
+      if (h4Valid && internalValid) {
+        // Chagua ILIYO KARIBU ZAIDI (distance ndogo zaidi) - SL
+        // "IMARA ZAIDI" (tighter) bado ndani ya muundo halali.
+        stopLossFinal =
+            internalDistance < h4Distance ? internalStructureSL : h4StructureSL;
+      } else if (internalValid) {
+        stopLossFinal = internalStructureSL;
+      } else if (h4Valid) {
+        stopLossFinal = h4StructureSL;
       } else {
         stopLossFinal = entry - safeAtr;
       }
@@ -1800,20 +2078,43 @@ _log("════════════════════════�
         sellLevel = max(sellLevel, h4Analysis.obHigh);
       }
 
-      final structureSL = sellLevel + (safeAtr * 0.2);
-      final structureDistance = structureSL - entry;
+      final h4StructureSL = sellLevel + (safeAtr * 0.2);
+      final h4Distance = h4StructureSL - entry;
 
-      if (sellLevel > 0 &&
-          structureSL > entry &&
-          structureDistance > 0 &&
-          structureDistance <= safeAtr * 5) {
-        stopLossFinal = structureSL;
+      final h4Valid = sellLevel > 0 &&
+          h4StructureSL > entry &&
+          h4Distance > 0 &&
+          h4Distance <= safeAtr * 5;
+
+      final internalLevel = internalStructure.swingHigh;
+      final internalStructureSL = internalLevel + (safeAtr * 0.2);
+      final internalDistance = internalStructureSL - entry;
+
+      final internalValid = internalLevel > 0 &&
+          internalStructureSL > entry &&
+          internalDistance > 0 &&
+          internalDistance <= safeAtr * 5;
+
+      if (h4Valid && internalValid) {
+        stopLossFinal =
+            internalDistance < h4Distance ? internalStructureSL : h4StructureSL;
+      } else if (internalValid) {
+        stopLossFinal = internalStructureSL;
+      } else if (h4Valid) {
+        stopLossFinal = h4StructureSL;
       } else {
         stopLossFinal = entry + safeAtr;
       }
     }
 
     final stopDistanceFinal = (entry - stopLossFinal).abs();
+
+    _log(
+      "SL FINAL: $stopLossFinal (distance: ${stopDistanceFinal.toStringAsFixed(5)}, "
+      "ATR: ${safeAtr.toStringAsFixed(5)}) - inatumia H4 na/au Internal "
+      "(H1) structure, ile iliyo KARIBU ZAIDI (imara zaidi) kati ya "
+      "hizo mbili zilizo halali.",
+    );
 
     final takeProfitFinal = isBuy
         ? entry + stopDistanceFinal * 3
@@ -1932,6 +2233,27 @@ if (isBuy || isSell) {
       dir ? "H1 Tweezers Bottom" : "H1 Tweezers Top",
     );
   }
+  // ONGEZO JIPYA (kutoka TOP_DOWN.docx/video - Chart Patterns,
+  // Internal Structure, na Fibonacci).
+  if (dir
+      ? (chartPatterns.doubleBottom || chartPatterns.inverseHeadAndShoulders)
+      : (chartPatterns.doubleTop || chartPatterns.headAndShoulders)) {
+    conditionsMetList.add(
+      dir
+          ? (chartPatterns.doubleBottom
+              ? "D1 Double Bottom"
+              : "D1 Inverse Head & Shoulders")
+          : (chartPatterns.doubleTop
+              ? "D1 Double Top"
+              : "D1 Head & Shoulders"),
+    );
+  }
+  if (dir ? internalStructure.bosUp : internalStructure.bosDown) {
+    conditionsMetList.add("Internal (H1) BOS - pullback imeisha");
+  }
+  if (dir ? buyInFibZone : sellInFibZone) {
+    conditionsMetList.add("Fibonacci Golden Zone (38.2%-78.6%)");
+  }
   if (dir ? emaBullish : emaBearish) {
     conditionsMetList.add("EMA50/EMA200 Alignment");
   }
@@ -1977,16 +2299,24 @@ if (!decision.allowed) {
   }
   // ONGEZO JIPYA (hoja C, B, D - kwa ombi la mtumiaji): sababu mpya
   // za kuzuia trade.
-  if (buy > sell && buyScore.liquidity == 0 && buyScore.orderBlock == 0) {
+  if (buy > sell &&
+      buyScore.liquidity == 0 &&
+      buyScore.orderBlock == 0 &&
+      !internalStructure.bosUp) {
     reasonsFailedList.add(
-      "Hakuna uthibitisho wa 'smart money' (Liquidity sweep AU Order "
-      "Block) kwa upande wa BUY - Trend/Structure pekee hazitoshi",
+      "Hakuna uthibitisho wa 'smart money' (Liquidity sweep, Order "
+      "Block, AU Internal BOS/H1) kwa upande wa BUY - Trend/Structure "
+      "pekee hazitoshi",
     );
   }
-  if (sell > buy && sellScore.liquidity == 0 && sellScore.orderBlock == 0) {
+  if (sell > buy &&
+      sellScore.liquidity == 0 &&
+      sellScore.orderBlock == 0 &&
+      !internalStructure.bosDown) {
     reasonsFailedList.add(
-      "Hakuna uthibitisho wa 'smart money' (Liquidity sweep AU Order "
-      "Block) kwa upande wa SELL - Trend/Structure pekee hazitoshi",
+      "Hakuna uthibitisho wa 'smart money' (Liquidity sweep, Order "
+      "Block, AU Internal BOS/H1) kwa upande wa SELL - Trend/Structure "
+      "pekee hazitoshi",
     );
   }
   if (buy > sell && noTradeZoneBuy) {
@@ -2331,6 +2661,18 @@ indicators: {
   "h4SweepHigh": h4Analysis.sweepHigh,
   "h4SweepLow": h4Analysis.sweepLow,
   "h4BullishOB": h4Analysis.bullishOB,
+  // ONGEZO JIPYA (kutoka video - "Internal vs External BOS/CHOCH").
+  "internalBosUp": internalStructure.bosUp,
+  "internalBosDown": internalStructure.bosDown,
+  "internalChochUp": internalStructure.chochUp,
+  "internalChochDown": internalStructure.chochDown,
+  // ONGEZO JIPYA (kutoka TOP_DOWN.docx - Chart Patterns na Fibonacci).
+  "doubleTop": chartPatterns.doubleTop,
+  "doubleBottom": chartPatterns.doubleBottom,
+  "headAndShoulders": chartPatterns.headAndShoulders,
+  "inverseHeadAndShoulders": chartPatterns.inverseHeadAndShoulders,
+  "buyInFibZone": buyInFibZone,
+  "sellInFibZone": sellInFibZone,
   "h4BearishOB": h4Analysis.bearishOB,
   "h4MomentumUp": h4Analysis.momentumUp,
   "h4MomentumDown": h4Analysis.momentumDown,
@@ -2790,6 +3132,16 @@ StructureAnalysis _detectStructure(
     chochDown: chochDown,
     swingHigh: swingHigh,
     swingLow: swingLow,
+    // ONGEZO JIPYA: swing points 5 za mwisho (bei tu) kwa Chart
+    // Pattern detection (Double Top/Bottom, Head & Shoulders).
+    recentSwingHighs: swingHighs
+        .skip(max(0, swingHighs.length - 5))
+        .map((s) => s.price)
+        .toList(),
+    recentSwingLows: swingLows
+        .skip(max(0, swingLows.length - 5))
+        .map((s) => s.price)
+        .toList(),
   );
 }
 InstitutionalOrderBlock _detectInstitutionalOB(
@@ -3393,6 +3745,13 @@ required bool noTradeZoneSell,
 // INAZIMWA - override hiyo ni hatari kwenye ranging market.
 required bool isRanging,
 
+// ONGEZO JIPYA (kutoka video - "Internal vs External BOS/CHOCH"):
+// Internal (H1) structure - njia ya ziada ya uthibitisho wa "smart
+// money"/entry timing, kando na Liquidity/OrderBlock (H4).
+required bool internalBosUp,
+
+required bool internalBosDown,
+
 }) {
 
 // ONGEZO JIPYA (hoja C): uthibitisho wa "smart money" - angalau
@@ -3400,8 +3759,17 @@ required bool isRanging,
 // upande husika, vinginevyo Trend/Structure PEKEE hazitoshi kufungua
 // trade - "tafuta BUY setup" (kusubiri location nzuri), si "BUY NOW"
 // kiotomatiki mara W1/D1 ikiwa bullish.
-final buySmartMoneyConfirmed = buyLiquidity > 0 || buyOrderBlock > 0;
-final sellSmartMoneyConfirmed = sellLiquidity > 0 || sellOrderBlock > 0;
+// ONGEZO JIPYA (kutoka video - "Internal vs External BOS"): Internal
+// (H1) BOS inayoendana na upande husika NAYO inahesabiwa kama
+// uthibitisho halali wa "smart money"/entry timing - si Liquidity/OB
+// (H4) pekee tena. Hii inaruhusu ENTRY sahihi zaidi hata kwenye
+// hali ambapo H4 haina liquidity sweep/OB wazi lakini H1 (internal)
+// inaonyesha structure inayoendana na mwelekeo (pullback imeisha,
+// trend inaendelea).
+final buySmartMoneyConfirmed =
+    buyLiquidity > 0 || buyOrderBlock > 0 || internalBosUp;
+final sellSmartMoneyConfirmed =
+    sellLiquidity > 0 || sellOrderBlock > 0 || internalBosDown;
 
 
 // FIX: awali hapa palikuwa na ukaguzi wa 'confluence.aligned' (ONE
