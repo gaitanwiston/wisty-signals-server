@@ -7,7 +7,6 @@ import 'package:web_socket_channel/io.dart';
 
 import '../services/market_analysis_service.dart';
 import '../models/market_analysis_result.dart';
-import '../models/all_pairs.dart';
 import '../services/deriv_service.dart';
 
 /// ================= GLOBAL STATE =================
@@ -19,6 +18,20 @@ final Map<String, DateTime> _lastSent = {};
 final derivService = DerivService.instance;
 
 const int cooldownSeconds = 3;
+
+// 🚨🚨🚨 FIX YA BUG HALISI (kwa ombi la mtumiaji - "0% kila mahali,
+// snapshot 0 pairs"): 'allPairs28' ilikuwa ORODHA TULI (hardcoded,
+// kutoka '../models/all_pairs.dart') yenye alama 28 TU - tofauti
+// KABISA na Server 2 ambayo inatumia 'getMarketPairs()' (kwa nguvu,
+// alama 89+). Kama majina ndani ya 'allPairs28' hayakuendana KABISA
+// na yale halisi ya Deriv (au yalikuwa machache mno), 'latestFor()'
+// ilikuwa ikirudisha 'null' kwa KILA alama - snapshot ikabaki TUPU
+// KABISA ("0 pairs"), na clients wapya (mfano baada ya reconnect)
+// hawakuwahi kupata data yoyote ya awali. Sasa 'allPairs28'
+// imeondolewa KABISA - orodha ya alama sasa inapatikana KWA NGUVU
+// (dynamic) kupitia 'getMarketPairs()', sawa KABISA na Server 2 -
+// hakuna tena hatari ya "list mbili tofauti zisizoendana".
+List<String> _allPairs = [];
 
 // FIX (bug halisi yenye athari kubwa - sababu kuu clients hawakuwa
 // wakipokea signal walizojisajilia): injini (MarketAnalysisService)
@@ -45,7 +58,7 @@ String _normalize(String s) => s.trim().toUpperCase();
 String? _resolvePair(String raw) {
   final normalizedInput = _normalize(raw);
 
-  for (final p in allPairs28) {
+  for (final p in _allPairs) {
     if (_normalize(p) == normalizedInput) {
       return normalizedInput;
     }
@@ -73,8 +86,21 @@ Future<void> main() async {
 
   final service = MarketAnalysisService.instance;
 
-  await service.startPairs(allPairs28);
-  service.startPeriodicAnalysis(allPairs28);
+  // 🚨 FIX (angalia maelezo marefu hapo juu kuhusu 'allPairs28'):
+  // tunaunganisha na Deriv KWANZA, kisha kupata orodha KAMILI ya
+  // alama KWA NGUVU (dynamic) - sawa KABISA na Server 2. Hii
+  // inahakikisha Server 1 na Server 2 ZINACHAMBUA ALAMA ZILE ZILE
+  // HASA, bila hatari ya "orodha mbili tofauti zisizoendana".
+  print("🔌 Kuunganisha na Deriv kupata orodha ya alama...");
+
+  await derivService.connect();
+
+  _allPairs = await derivService.getMarketPairs();
+
+  print("📊 SIGNALS SERVER: alama ${_allPairs.length} zimepatikana kwa nguvu.");
+
+  await service.startPairs(_allPairs);
+  service.startPeriodicAnalysis(_allPairs);
 
   service.analysisStream.listen((result) {
     _handleEngineSignal(result);
@@ -295,11 +321,12 @@ void _sendSnapshot(WebSocketChannel socket) {
 
   final snapshot = <String, dynamic>{};
 
-  for (final pair in allPairs28) {
+  for (final pair in _allPairs) {
     // FIX: 'latestFor()' sasa inasawazisha jina lenyewe ndani
     // (angalia fix kwenye market_analysis_service.dart), hivyo hii
     // itapata matokeo sahihi bila kujali herufi za 'pair' kama
-    // zilivyoandikwa kwenye allPairs28.
+    // zilivyoandikwa kwenye '_allPairs' (sasa ya nguvu/dynamic, si
+    // 'allPairs28' tuli ya zamani).
     final r = service.latestFor(pair);
     if (r == null) continue;
 
