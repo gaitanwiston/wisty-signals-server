@@ -95,7 +95,54 @@ Future<void> main() async {
 
   await derivService.connect();
 
-  _allPairs = await derivService.getMarketPairs();
+  // 🚨🚨🚨 FIX YA BUG HALISI YA MWISHO (kwa ombi la mtumiaji - "KILA
+  // alama 'haitambuliki'"): tuligundua kwamba 'await for (HttpRequest
+  // request in server)' (inayoshughulikia wateja) HAIANZI mpaka hatua
+  // hii ikamilike - kwa hiyo HAIKUWA "race condition" ya muda. Badala
+  // yake: 'getMarketPairs()' ilikuwa ikirudisha ORODHA TUPU KABISA
+  // (kushindwa kikamilifu, si "bado inasubiri") - na code ya AWALI
+  // haikuwa ikiangalia hilo KABISA, ikiendelea mbele na
+  // '_allPairs=[]' MILELE kwa kikao (session) kizima cha server. Kwa
+  // hiyo KILA client aliyejaribu kujisajili (subscribe) kwa ALAMA
+  // YOYOTE alipata "haitambuliki" - si kwa sababu ya muda, bali kwa
+  // sababu orodha halisi ilikuwa TUPU tangu mwanzo hadi mwisho.
+  //
+  // Sasa: tunajaribu tena (retry, na muda unaoongezeka - 5s, 10s,
+  // 20s...) HADI orodha isiwe tupu - na server HAIANZI KUPOKEA
+  // WATEJA KABISA mpaka hili likamilike (badala ya kuendelea kimya
+  // kimya na orodha tupu).
+  const maxPairsAttempts = 6;
+  int pairsAttempt = 0;
+
+  while (_allPairs.isEmpty && pairsAttempt < maxPairsAttempts) {
+    pairsAttempt++;
+
+    print(
+      "🔌 Kupata orodha ya alama (jaribio $pairsAttempt/$maxPairsAttempts)...",
+    );
+
+    _allPairs = await derivService.getMarketPairs();
+
+    if (_allPairs.isEmpty && pairsAttempt < maxPairsAttempts) {
+      final waitSeconds = 5 * pairsAttempt;
+      print(
+        "⚠️ getMarketPairs() imerudisha orodha TUPU - kusubiri "
+        "sekunde $waitSeconds kisha kujaribu tena...",
+      );
+      await Future.delayed(Duration(seconds: waitSeconds));
+    }
+  }
+
+  if (_allPairs.isEmpty) {
+    print(
+      "❌❌❌ HITILAFU KUBWA: getMarketPairs() imeshindwa mara zote "
+      "$maxPairsAttempts - HAKUNA alama zitakazopatikana kwa server "
+      "hii. Angalia Deriv App ID/Token ya Server 1, au muunganiko wa "
+      "mtandao. Server bado itaendesha (kuepuka kuanguka kabisa), "
+      "lakini clients HAWATAWEZA kujisajili kwa alama yoyote hadi "
+      "hili litatuliwe (anzisha upya server baada ya kurekebisha).",
+    );
+  }
 
   print("📊 SIGNALS SERVER: alama ${_allPairs.length} zimepatikana kwa nguvu.");
 
