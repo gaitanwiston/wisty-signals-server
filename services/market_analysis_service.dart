@@ -961,10 +961,34 @@ void printSymbolCoverage(List<String> expectedPairs) {
   print('═══════════════════════════════════════');
 }
 
-bool debugMode = true;
+// 🚨🚨🚨 FIX YA BUG HALISI (kwa ombi la mtumiaji - "Railway rate
+// limit reached... Messages dropped" ikisababisha kuchelewa kwa
+// mzunguko wa uchambuzi, na hivyo "INVALID ANALYSIS"/"NO ANALYSIS"
+// wakati wa trade): tuliongeza logging NYINGI SANA leo (Internal
+// Structure, Chart Patterns, Fibonacci, No Trade Zone, Market
+// Regime, SMC Extra, n.k.) - kila uchambuzi wa alama MOJA ulikuwa
+// ukichapisha mistari 60-80, ukizidisha na alama 89 = mistari 5000+
+// kwa kila mzunguko wa dakika 5 - kuzidi kwa mbali uwezo wa kawaida
+// wa Railway, na kusababisha "backpressure" inayoweza kuchelewesha
+// mzunguko MZIMA wa Dart event loop.
+//
+// Sasa: 'debugMode' ni 'false' KWA DEFAULT (mistari ya kina - kila
+// field - haichapishwi tena) - lakini bado inaweza kuwashwa upya kwa
+// urahisi (badilisha kuwa 'true') endapo utahitaji uchunguzi wa kina
+// tena siku moja.
+bool debugMode = false;
 
   void _log(String msg) {
     if (debugMode) print("[PROMAX ULTRA NEXT] $msg");
+  }
+
+  // ONGEZO JIPYA: kazi mpya ya "logAlways" - inachapisha KILA MARA
+  // (bila kujali 'debugMode') - kwa mistari MUHIMU tu (matokeo ya
+  // mwisho ya kila alama, hali ya mzunguko wa uchambuzi) - hii
+  // inatupatia uwazi wa msingi hata wakati 'debugMode=false',
+  // bila kuzalisha mistari elfu kwa elfu.
+  void _logAlways(String msg) {
+    print("[PROMAX ULTRA NEXT] $msg");
   }
 
   // ================= NORMALIZE =================
@@ -1071,18 +1095,18 @@ bool debugMode = true;
   void startPeriodicAnalysis(List<String> pairs) {
     _globalAnalysisTimer?.cancel();
 
-    _log("🚀 PERIODIC ANALYSIS STARTED");
+    _logAlways("🚀 PERIODIC ANALYSIS STARTED");
 
     _globalAnalysisTimer = Timer.periodic(
       const Duration(minutes: 5),
       (_) async {
-        _log("⏱ FORCED ANALYSIS ${DateTime.now()}");
+        _logAlways("⏱ FORCED ANALYSIS ${DateTime.now()}");
 
         for (final pair in pairs) {
           await _run(pair);
         }
 
-        _log("✅ PERIODIC ANALYSIS COMPLETE");
+        _logAlways("✅ PERIODIC ANALYSIS COMPLETE");
 
         // 🚨 ONGEZO JIPYA (hoja E - kwa ombi la mtumiaji): kazi hii
         // ilikuwepo TAYARI kwenye code (imejengwa awali) lakini
@@ -1227,7 +1251,7 @@ bool debugMode = true;
       _latest[symbol] = result;
       _controller.add(result);
 
-      _log("✅ UPDATED $symbol | BUY:${result.canBuy} SELL:${result.canSell}");
+      _logAlways("✅ UPDATED $symbol | BUY:${result.canBuy} SELL:${result.canSell}");
     } catch (e, st) {
       _log("❌ RUN ERROR => $pair");
       _log("$e");
